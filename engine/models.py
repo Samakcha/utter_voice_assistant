@@ -38,3 +38,19 @@ class SessionResult:
         return self.end_reason == EndReason.NO_SPEECH or (
             not self.speech_detected and self.end_reason in (EndReason.ESC, EndReason.STOPPED)
         )
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    """Result of speech-to-text transcription."""
+    text: str
+    language: str
+    audio_duration_sec: float
+    processing_time_sec: float
+
+    @property
+    def real_time_factor(self) -> float:
+        """Ratio of processing time to audio duration. Lower is faster (<1.0 is real-time)."""
+        if self.audio_duration_sec <= 0:
+            return 0.0
+        return self.processing_time_sec / self.audio_duration_sec

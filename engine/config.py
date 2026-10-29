@@ -40,12 +40,21 @@ class StorageConfig:
 
 
 @dataclass(frozen=True)
+class WhisperConfig:
+    model_size: str
+    language: str
+    initial_prompt: str
+    models_dir: Path
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
     timeouts: TimeoutsConfig
     audio: AudioConfig
     vad: VADConfig
     storage: StorageConfig
+    whisper: WhisperConfig
 
 
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
@@ -65,6 +74,11 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     recordings_dir = Path(data["storage"]["recordings_dir"])
     if not recordings_dir.is_absolute():
         recordings_dir = (project_root / recordings_dir).resolve()
+
+    whisper_data = data.get("whisper", {})
+    models_dir = Path(whisper_data.get("models_dir", "./models"))
+    if not models_dir.is_absolute():
+        models_dir = (project_root / models_dir).resolve()
 
     return AppConfig(
         hotkeys=HotkeysConfig(
@@ -89,5 +103,11 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         storage=StorageConfig(
             recordings_dir=recordings_dir,
             max_recordings_kept=int(data["storage"]["max_recordings_kept"]),
+        ),
+        whisper=WhisperConfig(
+            model_size=str(whisper_data.get("model_size", "small")),
+            language=str(whisper_data.get("language", "en")),
+            initial_prompt=str(whisper_data.get("initial_prompt", "")),
+            models_dir=models_dir,
         ),
     )

@@ -4,6 +4,9 @@
 # Audio session recordings (temporary WAV files)
 recordings/
 
+# Local Whisper model weights
+models/
+
 # Python bytecode & cache
 __pycache__/
 *.py[cod]

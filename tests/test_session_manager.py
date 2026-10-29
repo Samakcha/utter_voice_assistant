@@ -15,6 +15,7 @@ from engine.config import (
     StorageConfig,
     TimeoutsConfig,
     VADConfig,
+    WhisperConfig,
 )
 from engine.models import EndReason, SessionMode
 from engine.session import SessionManager
@@ -77,6 +78,12 @@ def create_test_config(temp_dir: Path) -> AppConfig:
         audio=AudioConfig(sample_rate=16000, chunk_size=512, channels=1),
         vad=VADConfig(speech_threshold=0.5, min_speech_chunks=2),
         storage=StorageConfig(recordings_dir=temp_dir, max_recordings_kept=3),
+        whisper=WhisperConfig(
+            model_size="small",
+            language="en",
+            initial_prompt="",
+            models_dir=temp_dir / "models",
+        ),
     )
 
 
