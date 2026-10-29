@@ -17,28 +17,30 @@ class HotkeyRegistrationError(Exception):
 class HotkeyManager:
     """
     Manages global hotkeys for Command Mode, Dictation Mode, and Session Cancellation (Esc).
-    Ensures listen-only behavior without suppressing keypresses.
+    Consolidates all hotkey handlers into a single listener to prevent concurrent TIS/TSM
+    access crashes on macOS.
     """
 
     def __init__(
         self,
         command_hotkey_str: str,
         dictation_hotkey_str: str,
-        on_command: Callable[[], None],
-        on_dictation: Callable[[], None],
-        on_cancel: Callable[[], None],
-        is_session_active: Callable[[], bool],
+        cancel_hotkey_str: str = "<esc>",
+        on_command: Optional[Callable[[], None]] = None,
+        on_dictation: Optional[Callable[[], None]] = None,
+        on_cancel: Optional[Callable[[], None]] = None,
+        is_session_active: Optional[Callable[[], bool]] = None,
     ):
         self._command_hotkey_str = command_hotkey_str
         self._dictation_hotkey_str = dictation_hotkey_str
-        self._on_command = on_command
-        self._on_dictation = on_dictation
-        self._on_cancel = on_cancel
-        self._is_session_active = is_session_active
+        self._cancel_hotkey_str = cancel_hotkey_str
+        self._on_command = on_command or (lambda: None)
+        self._on_dictation = on_dictation or (lambda: None)
+        self._on_cancel = on_cancel or (lambda: None)
+        self._is_session_active = is_session_active or (lambda: False)
 
         self._enabled: bool = True
         self._hotkey_listener: Optional[keyboard.GlobalHotKeys] = None
-        self._esc_listener: Optional[keyboard.Listener] = None
 
     @property
     def enabled(self) -> bool:
@@ -50,7 +52,7 @@ class HotkeyManager:
         logger.info("Hotkeys enabled state set to: %s", self._enabled)
 
     def start(self) -> None:
-        """Register and start listening for global hotkeys."""
+        """Register and start listening for global hotkeys on a single listener thread."""
         self._verify_system_permissions()
         hotkey_bindings = self._build_hotkey_map()
 
@@ -58,42 +60,26 @@ class HotkeyManager:
             self._hotkey_listener = keyboard.GlobalHotKeys(hotkey_bindings)
             self._hotkey_listener.start()
             logger.info(
-                "Registered global hotkeys: Command=%s, Dictation=%s",
+                "Registered global hotkeys: Command=%s, Dictation=%s, Cancel=%s",
                 self._command_hotkey_str,
                 self._dictation_hotkey_str,
+                self._cancel_hotkey_str,
             )
         except Exception as e:
             raise HotkeyRegistrationError(
-                f"Failed to register global hotkeys ({self._command_hotkey_str}, {self._dictation_hotkey_str}): {e}\n"
+                f"Failed to register global hotkeys ({self._command_hotkey_str}, "
+                f"{self._dictation_hotkey_str}, {self._cancel_hotkey_str}): {e}\n"
                 "This may indicate a conflict with an existing macOS system shortcut, or an invalid format."
             ) from e
 
-        try:
-            # Esc listener: strictly listen-only (suppress=False) so Esc always reaches active apps
-            self._esc_listener = keyboard.Listener(
-                on_press=self._handle_raw_keypress,
-                suppress=False,
-            )
-            self._esc_listener.start()
-            logger.info("Registered listen-only Esc listener.")
-        except Exception as e:
-            logger.error("Failed to start Esc listener: %s", e)
-
     def stop(self) -> None:
-        """Stop all hotkey listeners."""
+        """Stop hotkey listener."""
         if self._hotkey_listener is not None:
             try:
                 self._hotkey_listener.stop()
             except Exception as e:
                 logger.debug("Error stopping hotkey listener: %s", e)
             self._hotkey_listener = None
-
-        if self._esc_listener is not None:
-            try:
-                self._esc_listener.stop()
-            except Exception as e:
-                logger.debug("Error stopping Esc listener: %s", e)
-            self._esc_listener = None
 
         logger.info("Hotkey manager stopped.")
 
@@ -116,7 +102,6 @@ class HotkeyManager:
         mapping = {}
 
         try:
-            # Validate parsing
             keyboard.HotKey.parse(self._command_hotkey_str)
             mapping[self._command_hotkey_str] = self._handle_command_trigger
         except Exception as e:
@@ -130,6 +115,14 @@ class HotkeyManager:
         except Exception as e:
             raise HotkeyRegistrationError(
                 f"Invalid syntax for dictation_mode hotkey '{self._dictation_hotkey_str}': {e}"
+            ) from e
+
+        try:
+            keyboard.HotKey.parse(self._cancel_hotkey_str)
+            mapping[self._cancel_hotkey_str] = self._handle_cancel_trigger
+        except Exception as e:
+            raise HotkeyRegistrationError(
+                f"Invalid syntax for cancel hotkey '{self._cancel_hotkey_str}': {e}"
             ) from e
 
         return mapping
@@ -154,16 +147,14 @@ class HotkeyManager:
         except Exception as e:
             logger.error("Error executing dictation callback: %s", e, exc_info=True)
 
-    def _handle_raw_keypress(self, key) -> None:
-        """Handle raw key events. Strictly listen-only; only acts on Esc while recording."""
+    def _handle_cancel_trigger(self) -> None:
         if not self._enabled:
             return
 
-        if key == keyboard.Key.esc:
-            # Only trigger cancellation if a voice session is actively running
-            if self._is_session_active():
-                logger.info("Esc key pressed while session active; canceling.")
-                try:
-                    self._on_cancel()
-                except Exception as e:
-                    logger.error("Error executing cancel callback: %s", e, exc_info=True)
+        # Esc strictly acts only while a session is active; never suppresses the key
+        if self._is_session_active():
+            logger.info("Cancel hotkey detected (%s) while session active; canceling.", self._cancel_hotkey_str)
+            try:
+                self._on_cancel()
+            except Exception as e:
+                logger.error("Error executing cancel callback: %s", e, exc_info=True)
