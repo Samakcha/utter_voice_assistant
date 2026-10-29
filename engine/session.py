@@ -104,7 +104,7 @@ class SessionManager:
             try:
                 self._audio.start(self._on_audio_chunk)
             except Exception as e:
-                logger.error("Failed to start audio capture: %s", e)
+                logger.error("Failed to start audio capture: %s", e, exc_info=True)
                 self._is_active = False
                 self._current_mode = None
                 return False
@@ -113,43 +113,75 @@ class SessionManager:
                 try:
                     self.on_session_start(mode)
                 except Exception as e:
-                    logger.error("Error in on_session_start callback: %s", e)
+                    logger.error("Error in on_session_start callback: %s", e, exc_info=True)
 
             return True
 
     def cancel_session(self, reason: EndReason = EndReason.ESC) -> Optional[SessionResult]:
         """Cancel the current session immediately."""
-        with self._lock:
-            if not self._is_active:
-                return None
-            return self.stop_session(reason)
+        return self.stop_session(reason)
 
     def stop_session(self, reason: EndReason) -> Optional[SessionResult]:
-        """Stop the active session and process the recorded audio."""
+        """
+        Stop the active session and process the recorded audio.
+        Thread-safe: can be called from hotkeys, UI thread, or internal worker.
+        """
         with self._lock:
             if not self._is_active:
                 return None
 
+            # Mark inactive immediately to stop receiving further chunks
             self._is_active = False
             mode = self._current_mode or SessionMode.COMMAND
             self._current_mode = None
-
-            # Immediately stop the microphone stream
-            self._audio.stop()
-
-            now = time.monotonic()
-            duration_sec = max(0.0, now - self._session_start_time)
-            speech_detected = self._speech_detected
             chunks_to_save = list(self._audio_chunks)
             self._audio_chunks = []
+            speech_detected = self._speech_detected
+            start_time = self._session_start_time
 
-            # Save recorded audio to WAV file
-            audio_path = self._save_wav_file(chunks_to_save, mode, reason)
+        # Finalize outside the lock
+        return self._finalize_stop(reason, mode, chunks_to_save, speech_detected, start_time)
 
-            # Prune old recordings to stay within limit
-            self._prune_recordings()
+    def _finalize_stop(
+        self,
+        reason: EndReason,
+        mode: SessionMode,
+        chunks_to_save: List[np.ndarray],
+        speech_detected: bool,
+        start_time: float,
+    ) -> Optional[SessionResult]:
+        """
+        Stop the audio hardware stream, write WAV, prune old files,
+        log session details, and invoke UI callback.
+        Guaranteed never to deadlock and never to swallow exceptions.
+        """
+        result: Optional[SessionResult] = None
+        try:
+            # 1. Stop audio capture hardware
+            try:
+                self._audio.stop()
+            except Exception as e:
+                logger.error("Error stopping audio capture stream: %s", e, exc_info=True)
 
+            # 2. Timing and sample metrics
+            now = time.monotonic()
+            duration_sec = max(0.0, now - start_time)
             total_samples = sum(len(c) for c in chunks_to_save)
+
+            # 3. Save recorded audio to WAV file
+            audio_path: Optional[Path] = None
+            try:
+                audio_path = self._save_wav_file(chunks_to_save, mode, reason)
+            except Exception as e:
+                logger.error("Error saving WAV file: %s", e, exc_info=True)
+
+            # 4. Prune old recordings to keep within quota
+            try:
+                self._prune_recordings()
+            except Exception as e:
+                logger.error("Error pruning recordings: %s", e, exc_info=True)
+
+            # 5. Build SessionResult
             result = SessionResult(
                 mode=mode,
                 end_reason=reason,
@@ -160,26 +192,54 @@ class SessionManager:
                 total_samples=total_samples,
             )
 
+            # 6. Log one structured line with full session details
+            if result.audio_path and result.audio_path.exists():
+                audio_info = f"Audio: {result.audio_path}"
+            else:
+                reason_str = "no audio captured" if not chunks_to_save else "save failed"
+                audio_info = f"Audio: not saved ({reason_str})"
+
             logger.info(
-                "[Session Ended] Mode: %s | Reason: %s | Duration: %.2fs | Speech: %s | Audio: %s",
+                "[Session Ended] Mode: %s | Reason: %s | Duration: %.2fs | Speech: %s | %s",
                 result.mode.value,
                 result.end_reason.value,
                 result.duration_sec,
-                result.speech_detected,
-                result.audio_path.name if result.audio_path else "None",
+                "Yes" if result.speech_detected else "No",
+                audio_info,
             )
-
-            if self.on_session_end is not None:
+        except Exception as e:
+            logger.error("Unexpected error during session finalization: %s", e, exc_info=True)
+            if result is None:
+                result = SessionResult(
+                    mode=mode,
+                    end_reason=reason,
+                    duration_sec=max(0.0, time.monotonic() - start_time),
+                    audio_path=None,
+                    speech_detected=speech_detected,
+                    sample_rate=self._config.audio.sample_rate,
+                    total_samples=0,
+                )
+        finally:
+            # 7. Always invoke UI callback, even on error, to restore idle state
+            if self.on_session_end is not None and result is not None:
                 try:
                     self.on_session_end(result)
                 except Exception as e:
-                    logger.error("Error in on_session_end callback: %s", e)
+                    logger.error("Error in on_session_end callback: %s", e, exc_info=True)
 
-            return result
+        return result
 
     def _on_audio_chunk(self, chunk: np.ndarray) -> None:
-        """Callback invoked from audio capture thread for each frame."""
+        """
+        Callback invoked from audio capture thread for each frame.
+        Analyzes VAD and detects auto-stop conditions.
+        NEVER calls stream.stop() directly on this thread to avoid PortAudio deadlocks.
+        """
         session_to_stop: Optional[EndReason] = None
+        chunks_to_save: List[np.ndarray] = []
+        mode = SessionMode.COMMAND
+        speech_detected = False
+        start_time = 0.0
 
         with self._lock:
             if not self._is_active:
@@ -191,7 +251,7 @@ class SessionManager:
             try:
                 is_speech, prob = self._vad.is_speech(chunk)
             except Exception as e:
-                logger.error("VAD evaluation error: %s", e)
+                logger.error("VAD evaluation error: %s", e, exc_info=True)
                 is_speech, prob = False, 0.0
 
             if self._current_mode == SessionMode.COMMAND:
@@ -239,9 +299,24 @@ class SessionManager:
                         logger.info("Dictation mode: silence threshold of %.2fs reached; auto-stopping.", silence_duration)
                         session_to_stop = EndReason.SILENCE
 
-        # If a stop condition was met, stop the session outside the lock
+            # If auto-stopping, snapshot data and transition state immediately inside lock
+            if session_to_stop is not None:
+                self._is_active = False
+                mode = self._current_mode or SessionMode.COMMAND
+                self._current_mode = None
+                chunks_to_save = list(self._audio_chunks)
+                self._audio_chunks = []
+                speech_detected = self._speech_detected
+                start_time = self._session_start_time
+
+        # Dispatch finalization to a separate thread to prevent PortAudio callback deadlock
         if session_to_stop is not None:
-            self.stop_session(session_to_stop)
+            threading.Thread(
+                target=self._finalize_stop,
+                args=(session_to_stop, mode, chunks_to_save, speech_detected, start_time),
+                name="session-auto-stop",
+                daemon=True,
+            ).start()
 
     def _save_wav_file(
         self,
@@ -251,14 +326,20 @@ class SessionManager:
     ) -> Optional[Path]:
         """Save captured chunks as a temporary 16-bit mono WAV file."""
         if not chunks:
+            logger.warning("No audio chunks to save for session.")
             return None
 
         try:
+            self._config.storage.recordings_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"session_{timestamp}_{mode.value}_{reason.value}.wav"
             file_path = self._config.storage.recordings_dir / filename
 
             concatenated = np.concatenate(chunks)
+            if concatenated.size == 0:
+                logger.warning("Concatenated audio array is empty; not saving WAV.")
+                return None
+
             # Clip and convert float32 in [-1.0, 1.0] to int16 PCM
             pcm_data = (np.clip(concatenated, -1.0, 1.0) * 32767.0).astype(np.int16)
 
@@ -268,9 +349,15 @@ class SessionManager:
                 wf.setframerate(self._config.audio.sample_rate)
                 wf.writeframes(pcm_data.tobytes())
 
+            logger.info(
+                "Saved session audio to: %s (%.2f KB, %d frames)",
+                file_path,
+                file_path.stat().st_size / 1024.0,
+                len(pcm_data),
+            )
             return file_path
         except Exception as e:
-            logger.error("Failed to write WAV file: %s", e)
+            logger.error("Failed to write WAV file: %s", e, exc_info=True)
             return None
 
     def _prune_recordings(self) -> None:
@@ -293,6 +380,6 @@ class SessionManager:
                         file_to_delete.unlink()
                         logger.debug("Pruned old recording: %s", file_to_delete.name)
                     except OSError as e:
-                        logger.warning("Failed to delete old recording %s: %s", file_to_delete, e)
+                        logger.warning("Failed to delete old recording %s: %s", file_to_delete, e, exc_info=True)
         except Exception as e:
-            logger.warning("Error pruning old recordings: %s", e)
+            logger.error("Error pruning old recordings: %s", e, exc_info=True)

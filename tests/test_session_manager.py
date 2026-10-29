@@ -2,8 +2,10 @@
 
 from pathlib import Path
 import tempfile
+import threading
 import time
 from typing import Callable, Optional
+import wave
 import numpy as np
 
 from engine.config import (
@@ -68,9 +70,9 @@ def create_test_config(temp_dir: Path) -> AppConfig:
             cancel="<esc>",
         ),
         timeouts=TimeoutsConfig(
-            command_silence_sec=0.2,     # Short for fast testing
-            command_no_speech_sec=0.3,   # Short for fast testing
-            dictation_silence_sec=0.4,   # Short for fast testing
+            command_silence_sec=0.15,    # Short for fast testing
+            command_no_speech_sec=0.25,  # Short for fast testing
+            dictation_silence_sec=0.3,   # Short for fast testing
         ),
         audio=AudioConfig(sample_rate=16000, chunk_size=512, channels=1),
         vad=VADConfig(speech_threshold=0.5, min_speech_chunks=2),
@@ -83,22 +85,37 @@ def test_command_no_speech_timeout():
         config = create_test_config(Path(td))
         mock_audio = MockAudioCapture()
         mock_vad = MockVAD()
-        manager = SessionManager(config=config, vad=mock_vad, audio_capture=mock_audio)
+        done_event = threading.Event()
+        last_result = None
+
+        def on_end(res):
+            nonlocal last_result
+            last_result = res
+            done_event.set()
+
+        manager = SessionManager(
+            config=config,
+            vad=mock_vad,
+            audio_capture=mock_audio,
+            on_session_end=on_end,
+        )
 
         manager.start_session(SessionMode.COMMAND)
         assert manager.is_listening
         assert mock_audio.is_active
 
-        # Feed silence chunks until initial timeout (0.3s)
+        # Feed silence chunks until initial timeout (0.25s)
         silence = np.zeros(512, dtype=np.float32)
         mock_vad.next_prob = 0.0
 
-        for _ in range(8):
+        for _ in range(10):
             mock_audio.feed_chunk(silence)
-            time.sleep(0.05)
+            time.sleep(0.04)
 
+        assert done_event.wait(timeout=2.0), "Session did not auto-cancel on no-speech"
         assert not manager.is_listening
-        assert not mock_audio.is_active
+        assert last_result is not None
+        assert last_result.end_reason == EndReason.NO_SPEECH
 
 
 def test_command_speech_and_silence_autostop():
@@ -106,11 +123,13 @@ def test_command_speech_and_silence_autostop():
         config = create_test_config(Path(td))
         mock_audio = MockAudioCapture()
         mock_vad = MockVAD()
+        done_event = threading.Event()
         last_result = None
 
         def on_end(res):
             nonlocal last_result
             last_result = res
+            done_event.set()
 
         manager = SessionManager(
             config=config,
@@ -130,19 +149,83 @@ def test_command_speech_and_silence_autostop():
 
         assert manager._speech_detected
 
-        # 2. Feed silence chunks until trailing silence timeout (0.2s)
+        # 2. Feed silence chunks until trailing silence timeout (0.15s)
         silence_chunk = np.zeros(512, dtype=np.float32)
         mock_vad.next_prob = 0.0
-        for _ in range(6):
+        for _ in range(8):
             mock_audio.feed_chunk(silence_chunk)
-            time.sleep(0.05)
+            time.sleep(0.03)
 
+        assert done_event.wait(timeout=2.0), "Session did not auto-stop on trailing silence"
         assert not manager.is_listening
         assert last_result is not None
         assert last_result.end_reason == EndReason.SILENCE
         assert last_result.speech_detected
         assert last_result.audio_path is not None
         assert last_result.audio_path.exists()
+        assert last_result.audio_path.stat().st_size > 44
+
+
+def test_simulated_session_creates_non_empty_wav():
+    """Simulate a complete session, verify non-empty WAV and audio header validity."""
+    with tempfile.TemporaryDirectory() as td:
+        rec_dir = Path(td)
+        config = create_test_config(rec_dir)
+        mock_audio = MockAudioCapture()
+        mock_vad = MockVAD()
+        done_event = threading.Event()
+        captured_result = None
+
+        def on_end(res):
+            nonlocal captured_result
+            captured_result = res
+            done_event.set()
+
+        manager = SessionManager(
+            config=config,
+            vad=mock_vad,
+            audio_capture=mock_audio,
+            on_session_end=on_end,
+        )
+
+        manager.start_session(SessionMode.COMMAND)
+
+        # Feed 5 chunks of simulated audio (440Hz tone)
+        t = np.linspace(0, 0.032, 512, endpoint=False, dtype=np.float32)
+        sine_chunk = 0.5 * np.sin(2 * np.pi * 440 * t)
+        mock_vad.next_prob = 0.95
+
+        for _ in range(5):
+            mock_audio.feed_chunk(sine_chunk)
+            time.sleep(0.01)
+
+        # Feed silence chunks until silence timeout triggers auto-stop
+        silence_chunk = np.zeros(512, dtype=np.float32)
+        mock_vad.next_prob = 0.0
+        for _ in range(8):
+            mock_audio.feed_chunk(silence_chunk)
+            time.sleep(0.03)
+
+        # Wait for session finalization
+        assert done_event.wait(timeout=2.0), "Session did not complete within timeout"
+        assert captured_result is not None
+        assert captured_result.end_reason == EndReason.SILENCE
+        assert captured_result.speech_detected
+        assert captured_result.audio_path is not None
+        assert captured_result.audio_path.exists()
+        assert captured_result.audio_path.is_file()
+
+        # Verify WAV file is non-empty and contains frames
+        file_size = captured_result.audio_path.stat().st_size
+        assert file_size > 44, f"WAV file is only header or empty: {file_size} bytes"
+
+        with wave.open(str(captured_result.audio_path), "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getsampwidth() == 2
+            assert wf.getframerate() == 16000
+            assert wf.getnframes() > 0
+            frames = wf.readframes(wf.getnframes())
+            assert len(frames) == wf.getnframes() * 2
 
 
 def test_dictation_toggle_hotkey():

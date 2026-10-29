@@ -139,31 +139,38 @@ class VoiceAssistantApp(rumps.App):
                 self.title = self.TITLE_STOPPED
                 self.status_item.title = "Status: Stopped (Inactive)"
 
-        run_on_main_thread(_update_ui)
+        try:
+            run_on_main_thread(_update_ui)
+        except Exception as e:
+            logger.error("Failed to schedule UI reset on main thread: %s", e, exc_info=True)
 
         # Log session report to console
-        audio_name = result.audio_path.name if result.audio_path else "None"
-        speech_text = "Yes" if result.speech_detected else "No"
-        print(
-            f"\n"
-            f"┌─────────────────────────────────────────────────────────\n"
-            f"│ [Session Result]\n"
-            f"│ Mode:          {result.mode.value.capitalize()}\n"
-            f"│ End Reason:    {result.end_reason.value}\n"
-            f"│ Duration:      {result.duration_sec:.2f} s\n"
-            f"│ Speech Heard:  {speech_text}\n"
-            f"│ Audio File:    {audio_name}\n"
-            f"└─────────────────────────────────────────────────────────\n",
-            flush=True,
-        )
+        try:
+            audio_display = str(result.audio_path) if (result.audio_path and result.audio_path.exists()) else "not saved"
+            speech_text = "Yes" if result.speech_detected else "No"
+            print(
+                f"\n"
+                f"┌─────────────────────────────────────────────────────────\n"
+                f"│ [Session Result]\n"
+                f"│ Mode:          {result.mode.value.capitalize()}\n"
+                f"│ End Reason:    {result.end_reason.value}\n"
+                f"│ Duration:      {result.duration_sec:.2f} s\n"
+                f"│ Speech Heard:  {speech_text}\n"
+                f"│ Audio File:    {audio_display}\n"
+                f"└─────────────────────────────────────────────────────────\n",
+                flush=True,
+            )
+        except Exception as e:
+            logger.error("Failed to print session report: %s", e, exc_info=True)
 
         # Show notification (unless it was a quiet cancel with no speech)
         if not result.was_quiet_cancel:
             try:
+                file_name = result.audio_path.name if (result.audio_path and result.audio_path.exists()) else "not saved"
                 rumps.notification(
                     title="Voice Assistant",
                     subtitle=f"{result.mode.value.capitalize()} ended ({result.end_reason.value})",
-                    message=f"Duration: {result.duration_sec:.1f}s | Saved: {audio_name}",
+                    message=f"Duration: {result.duration_sec:.1f}s | Saved: {file_name}",
                 )
             except Exception as e:
                 logger.debug("Could not display notification: %s", e)
