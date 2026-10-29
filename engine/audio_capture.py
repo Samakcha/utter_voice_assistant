@@ -92,7 +92,7 @@ class AudioCapture:
                 self._stream.close()
                 logger.info("Microphone stream closed.")
             except Exception as e:
-                logger.warning("Error closing microphone stream: %s", e)
+                logger.error("Error closing microphone stream: %s", e, exc_info=True)
             finally:
                 self._stream = None
                 self._callback = None
