@@ -1,0 +1,46 @@
+# Voice Assistant Configuration (macOS Apple Silicon)
+# All tunable parameters (hotkeys, silence timeouts, thresholds, paths) are defined here.
+
+[hotkeys]
+# Global hotkey for Command Mode (interprets and executes voice actions)
+command_mode = "<ctrl>+<alt>+m"
+
+# Global hotkey for Dictation Mode (speech-to-text dictation into focused field)
+dictation_mode = "<ctrl>+<alt>+d"
+
+# Global hotkey to cancel the current listening session immediately
+cancel = "<esc>"
+
+[timeouts]
+# Duration of silence (in seconds) required after speech to auto-stop command mode
+command_silence_sec = 1.5
+
+# Time limit (in seconds) to detect initial speech in command mode before quiet cancellation
+command_no_speech_sec = 5.0
+
+# Duration of silence (in seconds) required to auto-stop dictation mode
+dictation_silence_sec = 8.0
+
+[audio]
+# Microphone sampling rate in Hz (16000 Hz required for Silero VAD and Whisper)
+sample_rate = 16000
+
+# Audio frame chunk size in samples (512 samples = 32ms window at 16kHz for Silero VAD)
+chunk_size = 512
+
+# Number of audio channels (1 = mono)
+channels = 1
+
+[vad]
+# Confidence threshold (0.0 to 1.0) above which a frame is considered active speech
+speech_threshold = 0.5
+
+# Minimum consecutive speech chunks before marking session as 'speech detected' (helps ignore brief clicks)
+min_speech_chunks = 2
+
+[storage]
+# Directory where temporary audio recordings from sessions are saved
+recordings_dir = "./recordings"
+
+# Maximum number of recent recording files to keep in recordings_dir before cleaning older files
+max_recordings_kept = 20

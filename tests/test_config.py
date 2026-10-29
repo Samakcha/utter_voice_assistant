@@ -1,0 +1,31 @@
+"""Unit tests verifying configuration loading and schema."""
+
+from pathlib import Path
+from engine.config import load_config
+
+
+def test_config_loading():
+    config = load_config()
+
+    # Hotkeys
+    assert config.hotkeys.command_mode == "<ctrl>+<alt>+m"
+    assert config.hotkeys.dictation_mode == "<ctrl>+<alt>+d"
+    assert config.hotkeys.cancel == "<esc>"
+
+    # Timeouts
+    assert config.timeouts.command_silence_sec == 1.5
+    assert config.timeouts.command_no_speech_sec == 5.0
+    assert config.timeouts.dictation_silence_sec == 8.0
+
+    # Audio
+    assert config.audio.sample_rate == 16000
+    assert config.audio.chunk_size == 512
+    assert config.audio.channels == 1
+
+    # VAD
+    assert 0.0 < config.vad.speech_threshold < 1.0
+    assert config.vad.min_speech_chunks >= 1
+
+    # Storage
+    assert isinstance(config.storage.recordings_dir, Path)
+    assert config.storage.max_recordings_kept == 20

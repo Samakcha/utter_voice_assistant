@@ -1,0 +1,12 @@
+# Voice Assistant dependencies (macOS Apple Silicon)
+sounddevice>=0.5.0
+numpy>=2.0.0
+rumps>=0.4.0
+pynput>=1.8.0
+silero-vad>=6.0.0
+torch>=2.0.0
+pyobjc-core>=12.0
+pyobjc-framework-Cocoa>=12.0
+pyobjc-framework-ApplicationServices>=12.0
+pyobjc-framework-Quartz>=12.0
+pyobjc-framework-AVFoundation>=12.0
