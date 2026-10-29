@@ -1,0 +1,13 @@
+# Python virtual environment
+.venv/
+
+# Audio session recordings (temporary WAV files)
+recordings/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# macOS system files
+.DS_Store
