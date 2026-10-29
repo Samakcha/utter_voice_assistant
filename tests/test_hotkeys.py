@@ -8,6 +8,7 @@ def test_hotkey_manager_initialization():
     mgr = HotkeyManager(
         command_hotkey_str="<ctrl>+<alt>+m",
         dictation_hotkey_str="<ctrl>+<alt>+d",
+        cancel_hotkey_str="<esc>",
         on_command=lambda: None,
         on_dictation=lambda: None,
         on_cancel=lambda: None,
@@ -16,12 +17,14 @@ def test_hotkey_manager_initialization():
     mapping = mgr._build_hotkey_map()
     assert "<ctrl>+<alt>+m" in mapping
     assert "<ctrl>+<alt>+d" in mapping
+    assert "<esc>" in mapping
 
 
 def test_invalid_hotkey_raises_clear_error():
     mgr = HotkeyManager(
         command_hotkey_str="<nonexistent_key_name>+xyz",
         dictation_hotkey_str="<ctrl>+<alt>+d",
+        cancel_hotkey_str="<esc>",
         on_command=lambda: None,
         on_dictation=lambda: None,
         on_cancel=lambda: None,
@@ -45,20 +48,19 @@ def test_esc_only_acts_when_session_active():
     mgr = HotkeyManager(
         command_hotkey_str="<ctrl>+<alt>+m",
         dictation_hotkey_str="<ctrl>+<alt>+d",
+        cancel_hotkey_str="<esc>",
         on_command=lambda: None,
         on_dictation=lambda: None,
         on_cancel=on_cancel,
         is_session_active=lambda: is_active,
     )
 
-    from pynput.keyboard import Key
-
     # 1. When session is NOT active, Esc must do nothing
     is_active = False
-    mgr._handle_raw_keypress(Key.esc)
+    mgr._handle_cancel_trigger()
     assert not cancel_called, "Esc must NOT trigger when session is inactive"
 
     # 2. When session IS active, Esc must trigger cancel
     is_active = True
-    mgr._handle_raw_keypress(Key.esc)
+    mgr._handle_cancel_trigger()
     assert cancel_called, "Esc must trigger cancel when session is active"

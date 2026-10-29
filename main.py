@@ -18,6 +18,11 @@ logger = logging.getLogger("voice_assistant")
 
 
 def main() -> None:
+    # 0. Ensure NSApplication is initialized on macOS Main Thread first
+    # This prevents Carbon TIS/TSM concurrency aborts when background threads start
+    import AppKit
+    _ = AppKit.NSApplication.sharedApplication()
+
     # 1. Architecture and Environment Verification
     arch = platform.machine()
     python_ver = sys.version.split()[0]

@@ -48,6 +48,7 @@ class VoiceAssistantApp(rumps.App):
         self.hotkey_manager = HotkeyManager(
             command_hotkey_str=config.hotkeys.command_mode,
             dictation_hotkey_str=config.hotkeys.dictation_mode,
+            cancel_hotkey_str=config.hotkeys.cancel,
             on_command=self._on_command_hotkey,
             on_dictation=self._on_dictation_hotkey,
             on_cancel=self._on_cancel_hotkey,
