@@ -44,3 +44,16 @@ recordings_dir = "./recordings"
 
 # Maximum number of recent recording files to keep in recordings_dir before cleaning older files
 max_recordings_kept = 20
+
+[whisper]
+# Whisper model size or variant: "tiny", "base", "small", "medium", "large-v3-turbo", or English-only ".en" variants
+model_size = "small"
+
+# Language code (ISO 639-1) for transcription ("en" for English)
+language = "en"
+
+# Optional initial prompt to bias vocabulary/names (default empty to avoid hallucination)
+initial_prompt = ""
+
+# Local directory where downloaded Whisper model weights are stored
+models_dir = "./models"

@@ -29,3 +29,9 @@ def test_config_loading():
     # Storage
     assert isinstance(config.storage.recordings_dir, Path)
     assert config.storage.max_recordings_kept == 20
+
+    # Whisper
+    assert config.whisper.model_size == "small"
+    assert config.whisper.language == "en"
+    assert config.whisper.initial_prompt == ""
+    assert isinstance(config.whisper.models_dir, Path)

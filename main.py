@@ -1,12 +1,12 @@
 """
-Voice Assistant (macOS Apple Silicon) - Step 1 Entry Point
-Runs local menu bar app with global hotkeys, Silero VAD, and mic capture auto-stops.
+Voice Assistant (macOS Apple Silicon) - Step 2 Entry Point
+Runs local menu bar app with global hotkeys, Silero VAD, and MLX Whisper transcription.
 """
 
 import logging
 import platform
 import sys
-from engine import SessionManager, load_config
+from engine import MLXWhisperTranscriber, SessionManager, load_config
 from interface import VoiceAssistantApp, format_permissions_report, get_all_permissions
 
 logging.basicConfig(
@@ -61,7 +61,9 @@ def main() -> None:
 
     # 4. Initialize Engine and Interface
     session_manager = SessionManager(config=config)
-    app = VoiceAssistantApp(config=config, session_manager=session_manager)
+    transcriber = MLXWhisperTranscriber(config=config.whisper)
+    app = VoiceAssistantApp(config=config, session_manager=session_manager, transcriber=transcriber)
+    transcriber.on_ready = app.on_model_ready
 
     # 5. Start Global Hotkeys and Run App
     app.start_listeners()
