@@ -222,6 +222,15 @@ class VoiceAssistantOverlay:
         """Display action failure or error state; auto-fades after ~2.5s."""
         self._show_content(f"⚠️ Action failed: {message}", auto_dismiss_sec=2.5)
 
+    def show_dictation_inserted(self, word_count: int) -> None:
+        """Display dictation completion: 'Inserted N words'; auto-fades after ~2.0s."""
+        noun = "word" if word_count == 1 else "words"
+        self._show_content(f"✍️ Inserted {word_count} {noun}", auto_dismiss_sec=2.0)
+
+    def show_dictation_empty(self) -> None:
+        """Display dictation empty feedback: 'Nothing to insert'; auto-fades after ~2.0s."""
+        self._show_content("Nothing to insert", auto_dismiss_sec=2.0)
+
     def hide(self) -> None:
         """Hide overlay immediately (e.g. on Esc cancellation)."""
         self._cancel_dismiss_timer()
