@@ -4,15 +4,19 @@ import logging
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Optional
 import AppKit
 import rumps
 
+from engine.actions import ActionResult, execute_action_async
+from engine.commands import CommandMatch, match_command
 from engine.config import AppConfig
 from engine.models import EndReason, SessionMode, SessionResult, TranscriptionResult
 from engine.session import SessionManager
 from engine.transcriber import BaseTranscriber
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
+from .overlay import VoiceAssistantOverlay
 from .permissions import format_permissions_report, get_all_permissions, open_settings_pane
 
 logger = logging.getLogger(__name__)
@@ -51,6 +55,11 @@ class VoiceAssistantApp(rumps.App):
         self.transcriber = transcriber
         self.is_running = True
         self.model_ready = False if transcriber is not None else True
+        self.overlay: Optional[VoiceAssistantOverlay] = None
+        try:
+            self.overlay = VoiceAssistantOverlay()
+        except Exception as e:
+            logger.warning("Could not initialize overlay: %s", e)
 
         # Connect session lifecycle callbacks
         self.session_manager.on_session_start = self._on_session_start
@@ -140,10 +149,15 @@ class VoiceAssistantApp(rumps.App):
 
     def _on_cancel_hotkey(self) -> None:
         """Handle Esc cancellation."""
+        if self.overlay is not None:
+            self.overlay.hide()
         self.session_manager.cancel_session(EndReason.ESC)
 
     def _on_session_start(self, mode: SessionMode) -> None:
         """Callback from engine when listening session begins."""
+        if self.overlay is not None:
+            self.overlay.show_listening(mode.value)
+
         def _update_ui():
             if mode == SessionMode.COMMAND:
                 self.title = self.TITLE_COMMAND
@@ -156,8 +170,11 @@ class VoiceAssistantApp(rumps.App):
 
     def _on_session_end(self, result: SessionResult) -> None:
         """Callback from engine when listening session ends."""
-        # 1. If NO speech was detected (or canceled), do NOT transcribe (avoids hallucinations)
-        if not result.speech_detected or not result.audio_path or not result.audio_path.exists():
+        # 1. If NO speech was detected or canceled by Esc, do NOT transcribe
+        if result.end_reason == EndReason.ESC or not result.speech_detected or not result.audio_path or not result.audio_path.exists():
+            if self.overlay is not None:
+                self.overlay.hide()
+
             def _reset_idle():
                 if self.is_running:
                     self.title = self.TITLE_IDLE
@@ -179,7 +196,10 @@ class VoiceAssistantApp(rumps.App):
             )
             return
 
-        # 2. Speech was detected: switch menu bar to Transcribing... state
+        # 2. Speech was detected: switch overlay and menu bar to Transcribing... state
+        if self.overlay is not None:
+            self.overlay.show_transcribing()
+
         def _set_transcribing_ui():
             self.title = self.TITLE_TRANSCRIBING
             self.status_item.title = "Status: Transcribing audio..."
@@ -198,6 +218,8 @@ class VoiceAssistantApp(rumps.App):
             )
         else:
             logger.warning("No transcriber configured; returning to idle.")
+            if self.overlay is not None:
+                self.overlay.hide()
             self._restore_idle_ui()
 
     def _on_transcription_success(
@@ -208,40 +230,187 @@ class VoiceAssistantApp(rumps.App):
         """Invoked when transcription completes on worker thread."""
         self._restore_idle_ui()
 
-        # Print formatted report to console
-        gain_str = f" (+{tx_result.applied_gain_db:.1f} dB gain applied)" if tx_result.applied_gain_db > 0.05 else ""
+        # Handle Dictation Mode (Step 3: dictation never triggers the rule layer)
+        if session_result.mode == SessionMode.DICTATION:
+            if self.overlay is not None:
+                self.overlay.hide()
+
+            gain_str = f" (+{tx_result.applied_gain_db:.1f} dB gain applied)" if tx_result.applied_gain_db > 0.05 else ""
+            print(
+                f"\n"
+                f"┌─────────────────────────────────────────────────────────\n"
+                f"│ [Dictation Heard] \"{tx_result.text}\"\n"
+                f"│ Mode:          Dictation\n"
+                f"│ End Reason:    {session_result.end_reason.value}\n"
+                f"│ Audio Length:  {tx_result.audio_duration_sec:.2f} s\n"
+                f"│ Audio Levels:  Peak: {session_result.peak_dbfs:.1f} dBFS | RMS: {session_result.rms_dbfs:.1f} dBFS{gain_str}\n"
+                f"│ Input Device:  {session_result.input_device}\n"
+                f"│ Latency:       {tx_result.processing_time_sec:.3f} s (RTF: {tx_result.real_time_factor:.2f}x)\n"
+                f"│ Audio File:    {session_result.audio_path.name if session_result.audio_path else 'None'}\n"
+                f"└─────────────────────────────────────────────────────────\n",
+                flush=True,
+            )
+            try:
+                rumps.notification(
+                    title="Voice Assistant",
+                    subtitle="Dictation Heard",
+                    message=f"\"{tx_result.text}\"",
+                )
+            except Exception as e:
+                logger.debug("Could not display notification: %s", e)
+            return
+
+        # Handle Command Mode: Evaluate rule layer
+        t_rule_0 = time.perf_counter()
+        match = match_command(tx_result.text)
+        t_rule_1 = time.perf_counter()
+        rule_match_time_sec = t_rule_1 - t_rule_0
+
+        silence_wait_sec = (
+            session_result.trailing_silence_sec
+            if session_result.trailing_silence_sec > 0.0
+            else self.config.timeouts.command_silence_sec
+        )
+
+        # Case A: No recognized rule
+        if match is None:
+            if self.overlay is not None:
+                self.overlay.show_unrecognized(tx_result.text)
+
+            decision_to_result_sec = (
+                (time.monotonic() - session_result.auto_stop_time)
+                if session_result.auto_stop_time > 0.0
+                else (tx_result.processing_time_sec + rule_match_time_sec)
+            )
+            speech_to_result_sec = silence_wait_sec + decision_to_result_sec
+
+            print(
+                f"\n"
+                f"┌─────────────────────────────────────────────────────────\n"
+                f"│ [Command Unrecognized] No rule matched\n"
+                f"│ Utterance:        \"{tx_result.text}\"\n"
+                f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path else 'None'}\n"
+                f"├─────────────────────────────────────────────────────────\n"
+                f"│ Latency Breakdown:\n"
+                f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
+                f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s (RTF: {tx_result.real_time_factor:.2f}x)\n"
+                f"│ • Rule Matching:  {rule_match_time_sec:.4f} s\n"
+                f"│ ────────────────────────────────────────────────────────\n"
+                f"│ Total (Decision -> Result):   {decision_to_result_sec:.3f} s\n"
+                f"│ Total (Speech End -> Result): {speech_to_result_sec:.3f} s\n"
+                f"└─────────────────────────────────────────────────────────\n",
+                flush=True,
+            )
+
+            logger.info(
+                "[Command Unrecognized] \"%s\" | Silence: %.2fs | Tx: %.3fs | Rule: %.4fs | Total: %.3fs",
+                tx_result.text,
+                silence_wait_sec,
+                tx_result.processing_time_sec,
+                rule_match_time_sec,
+                decision_to_result_sec,
+            )
+
+            try:
+                rumps.notification(
+                    title="Voice Assistant",
+                    subtitle="Command Unrecognized",
+                    message=f'Heard: "{tx_result.text}" (Nothing recognized)',
+                )
+            except Exception as e:
+                logger.debug("Could not display notification: %s", e)
+            return
+
+        # Case B: Command matched (e.g. "open_notes")
+        if self.overlay is not None:
+            self.overlay.show_action_start(tx_result.text, "Opening Notes...")
+
+        # Run action asynchronously on worker thread with timeout (never blocks UI)
+        def _on_action_done(act_res: ActionResult):
+            run_on_main_thread(
+                lambda: self._handle_action_result(
+                    act_res,
+                    match,
+                    tx_result,
+                    session_result,
+                    rule_match_time_sec,
+                )
+            )
+
+        execute_action_async(
+            action_id=match.action_id,
+            callback=_on_action_done,
+            timeout_sec=5.0,
+        )
+
+    def _handle_action_result(
+        self,
+        act_res: ActionResult,
+        match: CommandMatch,
+        tx_result: TranscriptionResult,
+        session_result: SessionResult,
+        rule_match_time_sec: float,
+    ) -> None:
+        """Handle completion of an action on main thread."""
+        if act_res.success:
+            if self.overlay is not None:
+                self.overlay.show_action_success(tx_result.text, act_res.message)
+        else:
+            if self.overlay is not None:
+                self.overlay.show_error(act_res.error or act_res.message)
+
+        # Calculate exact latency breakdown
+        silence_wait_sec = (
+            session_result.trailing_silence_sec
+            if session_result.trailing_silence_sec > 0.0
+            else self.config.timeouts.command_silence_sec
+        )
+        decision_to_notes_sec = (
+            (time.monotonic() - session_result.auto_stop_time)
+            if session_result.auto_stop_time > 0.0
+            else (tx_result.processing_time_sec + rule_match_time_sec + act_res.execution_time_sec)
+        )
+        speech_to_notes_sec = silence_wait_sec + decision_to_notes_sec
+
+        status_str = "SUCCESS" if act_res.success else f"FAILED ({act_res.error})"
         print(
             f"\n"
             f"┌─────────────────────────────────────────────────────────\n"
-            f"│ [Heard] \"{tx_result.text}\"\n"
-            f"│ Mode:          {session_result.mode.value.capitalize()}\n"
-            f"│ End Reason:    {session_result.end_reason.value}\n"
-            f"│ Audio Length:  {tx_result.audio_duration_sec:.2f} s\n"
-            f"│ Audio Levels:  Peak: {session_result.peak_dbfs:.1f} dBFS | RMS: {session_result.rms_dbfs:.1f} dBFS{gain_str}\n"
-            f"│ Input Device:  {session_result.input_device}\n"
-            f"│ Latency:       {tx_result.processing_time_sec:.3f} s (RTF: {tx_result.real_time_factor:.2f}x)\n"
-            f"│ Audio File:    {session_result.audio_path.name if session_result.audio_path else 'None'}\n"
+            f"│ [Command Executed] \"{match.action_id}\" -> {status_str}\n"
+            f"│ Utterance:        \"{tx_result.text}\"\n"
+            f"│ Action Message:   {act_res.message}\n"
+            f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path else 'None'}\n"
+            f"├─────────────────────────────────────────────────────────\n"
+            f"│ Latency Breakdown:\n"
+            f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
+            f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s (MLX Whisper '{self.config.whisper.model_size}')\n"
+            f"│ • Rule Matching:  {rule_match_time_sec:.4f} s\n"
+            f"│ • Action Exec:    {act_res.execution_time_sec:.4f} s (`open -a Notes`)\n"
+            f"│ ────────────────────────────────────────────────────────\n"
+            f"│ Total (Decision -> Notes launched):   {decision_to_notes_sec:.3f} s\n"
+            f"│ Total (Speech End -> Notes launched): {speech_to_notes_sec:.3f} s\n"
             f"└─────────────────────────────────────────────────────────\n",
             flush=True,
         )
 
         logger.info(
-            "[Heard] \"%s\" | Audio: %.2fs | Peak: %.1fdBFS | RMS: %.1fdBFS | Gain: %.1fdB | Latency: %.3fs (RTF: %.2fx)",
-            tx_result.text,
-            tx_result.audio_duration_sec,
-            session_result.peak_dbfs,
-            session_result.rms_dbfs,
-            tx_result.applied_gain_db,
+            "[Command: %s] %s | Silence: %.2fs | Tx: %.3fs | Rule: %.4fs | Action: %.3fs | Total: %.3fs",
+            match.action_id,
+            "OK" if act_res.success else "FAIL",
+            silence_wait_sec,
             tx_result.processing_time_sec,
-            tx_result.real_time_factor,
+            rule_match_time_sec,
+            act_res.execution_time_sec,
+            decision_to_notes_sec,
         )
 
-        # Show notification with Heard text
+        # Fallback system notification
         try:
+            subtitle = "Command Success" if act_res.success else "Command Failed"
             rumps.notification(
                 title="Voice Assistant",
-                subtitle="Heard",
-                message=f"\"{tx_result.text}\" ({tx_result.processing_time_sec:.2f}s)",
+                subtitle=subtitle,
+                message=f'Heard: "{tx_result.text}" → {act_res.message}',
             )
         except Exception as e:
             logger.debug("Could not display notification: %s", e)
@@ -311,6 +480,8 @@ class VoiceAssistantApp(rumps.App):
         """Clean shutdown of engine and interface."""
         logger.info("Quitting Voice Assistant...")
         self.is_running = False
+        if self.overlay is not None:
+            self.overlay.hide()
         self.hotkey_manager.stop()
         if self.session_manager.is_listening:
             self.session_manager.stop_session(EndReason.STOPPED)

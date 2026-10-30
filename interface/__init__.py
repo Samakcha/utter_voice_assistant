@@ -6,6 +6,7 @@ Calls into engine/, never the reverse.
 
 from .app import VoiceAssistantApp
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
+from .overlay import VoiceAssistantOverlay
 from .permissions import (
     check_accessibility_permission,
     check_input_monitoring_permission,
@@ -19,6 +20,7 @@ __all__ = [
     "HotkeyManager",
     "HotkeyRegistrationError",
     "VoiceAssistantApp",
+    "VoiceAssistantOverlay",
     "check_accessibility_permission",
     "check_input_monitoring_permission",
     "check_microphone_permission",

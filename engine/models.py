@@ -34,6 +34,8 @@ class SessionResult:
     peak_dbfs: float = -100.0
     rms_dbfs: float = -100.0
     input_device: str = "Unknown"
+    trailing_silence_sec: float = 0.0
+    auto_stop_time: float = 0.0
 
     @property
     def was_quiet_cancel(self) -> bool:

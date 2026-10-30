@@ -127,6 +127,7 @@ class SessionManager:
         Stop the active session and process the recorded audio.
         Thread-safe: can be called from hotkeys, UI thread, or internal worker.
         """
+        auto_stop_time = time.monotonic()
         with self._lock:
             if not self._is_active:
                 return None
@@ -141,7 +142,15 @@ class SessionManager:
             start_time = self._session_start_time
 
         # Finalize outside the lock
-        return self._finalize_stop(reason, mode, chunks_to_save, speech_detected, start_time)
+        return self._finalize_stop(
+            reason=reason,
+            mode=mode,
+            chunks_to_save=chunks_to_save,
+            speech_detected=speech_detected,
+            start_time=start_time,
+            trailing_silence_sec=0.0,
+            auto_stop_time=auto_stop_time,
+        )
 
     def _finalize_stop(
         self,
@@ -150,6 +159,8 @@ class SessionManager:
         chunks_to_save: List[np.ndarray],
         speech_detected: bool,
         start_time: float,
+        trailing_silence_sec: float = 0.0,
+        auto_stop_time: float = 0.0,
     ) -> Optional[SessionResult]:
         """
         Stop the audio hardware stream, write WAV, prune old files,
@@ -202,6 +213,8 @@ class SessionManager:
                 peak_dbfs=peak_dbfs,
                 rms_dbfs=rms_dbfs,
                 input_device=device_name,
+                trailing_silence_sec=trailing_silence_sec,
+                auto_stop_time=auto_stop_time,
             )
 
             # 6. Log one structured line with full session details
@@ -255,6 +268,8 @@ class SessionManager:
         mode = SessionMode.COMMAND
         speech_detected = False
         start_time = 0.0
+        trailing_silence_sec = 0.0
+        auto_stop_time = 0.0
 
         with self._lock:
             if not self._is_active:
@@ -284,6 +299,7 @@ class SessionManager:
                         if elapsed >= self._config.timeouts.command_no_speech_sec:
                             logger.info("Command mode: no speech within %.1fs; canceling quietly.", elapsed)
                             session_to_stop = EndReason.NO_SPEECH
+                            auto_stop_time = now
                 else:
                     # Speech already detected: track trailing silence
                     if is_speech:
@@ -294,6 +310,8 @@ class SessionManager:
                             if silence_duration >= self._config.timeouts.command_silence_sec:
                                 logger.info("Command mode: trailing silence of %.2fs; auto-stopping.", silence_duration)
                                 session_to_stop = EndReason.SILENCE
+                                trailing_silence_sec = silence_duration
+                                auto_stop_time = now
 
             elif self._current_mode == SessionMode.DICTATION:
                 # Dictation mode: continuous recording through pauses under dictation_silence_sec
@@ -313,6 +331,8 @@ class SessionManager:
                     if silence_duration >= self._config.timeouts.dictation_silence_sec:
                         logger.info("Dictation mode: silence threshold of %.2fs reached; auto-stopping.", silence_duration)
                         session_to_stop = EndReason.SILENCE
+                        trailing_silence_sec = silence_duration
+                        auto_stop_time = now
 
             # If auto-stopping, snapshot data and transition state immediately inside lock
             if session_to_stop is not None:
@@ -328,7 +348,15 @@ class SessionManager:
         if session_to_stop is not None:
             threading.Thread(
                 target=self._finalize_stop,
-                args=(session_to_stop, mode, chunks_to_save, speech_detected, start_time),
+                args=(
+                    session_to_stop,
+                    mode,
+                    chunks_to_save,
+                    speech_detected,
+                    start_time,
+                    trailing_silence_sec,
+                    auto_stop_time,
+                ),
                 name="session-auto-stop",
                 daemon=True,
             ).start()
