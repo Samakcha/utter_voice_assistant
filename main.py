@@ -38,6 +38,7 @@ def main() -> None:
     # 2. Load Configuration
     config = load_config()
     logger.info("Configuration loaded from config.toml.")
+    logger.info("Audio input device: %s", AudioCapture.get_input_device_name())
     logger.info(
         "Hotkeys: Command='%s', Dictation='%s', Cancel='%s'",
         config.hotkeys.command_mode,
@@ -50,6 +51,12 @@ def main() -> None:
         config.timeouts.command_no_speech_sec,
         config.timeouts.dictation_silence_sec,
     )
+    logger.info(
+        "Normalization: Enabled=%s, Target=%.1fdBFS, Max Gain=%.1fdB",
+        config.normalization.enabled,
+        config.normalization.target_peak_dbfs,
+        config.normalization.max_gain_db,
+    )
 
     # 3. macOS Permissions Audit
     permissions = get_all_permissions()
@@ -61,7 +68,10 @@ def main() -> None:
 
     # 4. Initialize Engine and Interface
     session_manager = SessionManager(config=config)
-    transcriber = MLXWhisperTranscriber(config=config.whisper)
+    transcriber = MLXWhisperTranscriber(
+        config=config.whisper,
+        normalization_config=config.normalization,
+    )
     app = VoiceAssistantApp(config=config, session_manager=session_manager, transcriber=transcriber)
     transcriber.on_ready = app.on_model_ready
 

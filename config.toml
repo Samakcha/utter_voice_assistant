@@ -32,11 +32,22 @@ chunk_size = 512
 channels = 1
 
 [vad]
-# Confidence threshold (0.0 to 1.0) above which a frame is considered active speech
-speech_threshold = 0.5
+# Confidence threshold (0.0 to 1.0) above which a frame is considered active speech.
+# Recommended: 0.35 (reliably detects soft speech down to -25 dBFS; 0.5 can miss soft speech, while ambient noise is < 0.13)
+speech_threshold = 0.35
 
 # Minimum consecutive speech chunks before marking session as 'speech detected' (helps ignore brief clicks)
 min_speech_chunks = 2
+
+[normalization]
+# Whether to normalize audio volume before sending it to Whisper (improves soft/normal speech accuracy)
+enabled = true
+
+# Target peak level in dBFS for normalization (default -3.0 dBFS provides 3 dB headroom against clipping)
+target_peak_dbfs = -3.0
+
+# Maximum gain boost in dB (default 20.0 dB prevents blowing up background noise on quiet or silent clips)
+max_gain_db = 20.0
 
 [storage]
 # Directory where temporary audio recordings from sessions are saved

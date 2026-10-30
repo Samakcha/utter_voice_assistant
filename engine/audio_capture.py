@@ -20,6 +20,18 @@ class AudioCapture:
     Guarantees the microphone is ONLY open while an active recording session is running.
     """
 
+    @staticmethod
+    def get_input_device_name() -> str:
+        """Query the system default input audio device name safely."""
+        try:
+            device_info = sd.query_devices(kind="input")
+            if isinstance(device_info, dict):
+                return str(device_info.get("name", "Default Microphone"))
+            return "Default Microphone"
+        except Exception as e:
+            logger.debug("Could not query input device info: %s", e)
+            return "Default Microphone"
+
     def __init__(
         self,
         sample_rate: int = 16000,
@@ -29,6 +41,7 @@ class AudioCapture:
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
         self.channels = channels
+        self.device_name: str = self.get_input_device_name()
         self._stream: Optional[sd.InputStream] = None
         self._callback: Optional[Callable[[np.ndarray], None]] = None
         self._lock = threading.Lock()
@@ -64,6 +77,7 @@ class AudioCapture:
                         logger.error("Error in audio chunk callback: %s", e, exc_info=True)
 
             try:
+                self.device_name = self.get_input_device_name()
                 self._stream = sd.InputStream(
                     samplerate=self.sample_rate,
                     blocksize=self.chunk_size,
@@ -72,7 +86,12 @@ class AudioCapture:
                     callback=_sd_callback,
                 )
                 self._stream.start()
-                logger.info("Microphone stream started (%d Hz, blocksize=%d).", self.sample_rate, self.chunk_size)
+                logger.info(
+                    "Microphone stream started (%d Hz, blocksize=%d, device='%s').",
+                    self.sample_rate,
+                    self.chunk_size,
+                    self.device_name,
+                )
             except Exception as e:
                 self._stream = None
                 self._callback = None
