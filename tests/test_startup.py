@@ -18,13 +18,15 @@ def test_startup_smoke_test(monkeypatch):
     assert app.is_running is True
     assert app.hotkey_manager is not None
 
-    # Clean up resources so pytest teardown is clean
-    try:
-        app.hotkey_manager.stop()
-        if app.transcriber is not None:
-            app.transcriber.close()
-    except Exception:
-        pass
+    # Wait for transcriber warmup to finish cleanly so Metal GPU context is not interrupted
+    if app.transcriber is not None:
+        app.transcriber.wait_until_ready(timeout=15.0)
+        app.transcriber.close()
+
+    if app.overlay is not None:
+        app.overlay.hide()
+
+    app.hotkey_manager.stop()
 
 
 def test_startup_check_flag(monkeypatch):
