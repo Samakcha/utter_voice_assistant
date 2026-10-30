@@ -12,6 +12,7 @@ from engine.config import (
     AppConfig,
     AudioConfig,
     HotkeysConfig,
+    NormalizationConfig,
     StorageConfig,
     TimeoutsConfig,
     VADConfig,
@@ -83,6 +84,11 @@ def create_test_config(temp_dir: Path) -> AppConfig:
             language="en",
             initial_prompt="",
             models_dir=temp_dir / "models",
+        ),
+        normalization=NormalizationConfig(
+            enabled=True,
+            target_peak_dbfs=-3.0,
+            max_gain_db=20.0,
         ),
     )
 
@@ -307,3 +313,22 @@ def test_recordings_retention_pruning():
 
         wav_files = list(rec_dir.glob("*.wav"))
         assert len(wav_files) <= 3, f"Expected at most 3 WAV files, found {len(wav_files)}"
+
+
+def test_session_result_audio_levels():
+    with tempfile.TemporaryDirectory() as td:
+        config = create_test_config(Path(td))
+        mock_audio = MockAudioCapture()
+        mock_vad = MockVAD()
+        manager = SessionManager(config=config, vad=mock_vad, audio_capture=mock_audio)
+
+        manager.start_session(SessionMode.COMMAND)
+        # Feed known audio chunk with amplitude 0.5 (-6 dBFS)
+        chunk = np.full(512, 0.5, dtype=np.float32)
+        mock_audio.feed_chunk(chunk)
+        res = manager.stop_session(EndReason.HOTKEY)
+
+        assert res is not None
+        assert abs(res.peak_dbfs - (-6.02)) < 0.1
+        assert abs(res.rms_dbfs - (-6.02)) < 0.1
+        assert res.input_device is not None

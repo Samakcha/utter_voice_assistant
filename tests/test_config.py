@@ -35,3 +35,8 @@ def test_config_loading():
     assert config.whisper.language == "en"
     assert config.whisper.initial_prompt == ""
     assert isinstance(config.whisper.models_dir, Path)
+
+    # Normalization
+    assert config.normalization.enabled is True
+    assert config.normalization.target_peak_dbfs == -3.0
+    assert config.normalization.max_gain_db == 20.0

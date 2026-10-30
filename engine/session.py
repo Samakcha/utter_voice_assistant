@@ -10,6 +10,7 @@ import wave
 import numpy as np
 
 from .audio_capture import AudioCapture
+from .audio_utils import compute_audio_levels
 from .config import AppConfig
 from .models import EndReason, SessionMode, SessionResult
 from .vad import SileroVAD
@@ -163,10 +164,18 @@ class SessionManager:
             except Exception as e:
                 logger.error("Error stopping audio capture stream: %s", e, exc_info=True)
 
-            # 2. Timing and sample metrics
+            # 2. Timing, sample metrics, and audio levels
             now = time.monotonic()
             duration_sec = max(0.0, now - start_time)
             total_samples = sum(len(c) for c in chunks_to_save)
+
+            concatenated = (
+                np.concatenate(chunks_to_save)
+                if chunks_to_save
+                else np.array([], dtype=np.float32)
+            )
+            peak_dbfs, rms_dbfs = compute_audio_levels(concatenated)
+            device_name = getattr(self._audio, "device_name", None) or AudioCapture.get_input_device_name()
 
             # 3. Save recorded audio to WAV file
             audio_path: Optional[Path] = None
@@ -190,6 +199,9 @@ class SessionManager:
                 speech_detected=speech_detected,
                 sample_rate=self._config.audio.sample_rate,
                 total_samples=total_samples,
+                peak_dbfs=peak_dbfs,
+                rms_dbfs=rms_dbfs,
+                input_device=device_name,
             )
 
             # 6. Log one structured line with full session details
@@ -200,11 +212,14 @@ class SessionManager:
                 audio_info = f"Audio: not saved ({reason_str})"
 
             logger.info(
-                "[Session Ended] Mode: %s | Reason: %s | Duration: %.2fs | Speech: %s | %s",
+                "[Session Ended] Mode: %s | Reason: %s | Duration: %.2fs | Speech: %s | Levels: Peak=%.1f dBFS, RMS=%.1f dBFS | Device: %s | %s",
                 result.mode.value,
                 result.end_reason.value,
                 result.duration_sec,
                 "Yes" if result.speech_detected else "No",
+                result.peak_dbfs,
+                result.rms_dbfs,
+                result.input_device,
                 audio_info,
             )
         except Exception as e:

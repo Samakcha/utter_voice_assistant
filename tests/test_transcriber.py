@@ -69,3 +69,34 @@ def test_transcribe_numpy_array(transcriber):
     result = transcriber.transcribe(audio)
     assert isinstance(result, TranscriptionResult)
     assert abs(result.audio_duration_sec - 1.0) < 0.01
+
+
+def test_transcribe_with_and_without_normalization(transcriber):
+    sample_wav = Path(__file__).resolve().parent / "data" / "sample.wav"
+    assert sample_wav.is_file()
+
+    # Transcribe with normalization
+    res_norm = transcriber.transcribe(sample_wav, normalize=True)
+    assert isinstance(res_norm, TranscriptionResult)
+
+    # Transcribe without normalization
+    res_raw = transcriber.transcribe(sample_wav, normalize=False)
+    assert isinstance(res_raw, TranscriptionResult)
+    assert res_raw.applied_gain_db == 0.0
+
+
+def test_transcribe_does_not_modify_wav_file(transcriber):
+    import hashlib
+    sample_wav = Path(__file__).resolve().parent / "data" / "sample.wav"
+    assert sample_wav.is_file()
+
+    with open(sample_wav, "rb") as f:
+        before_hash = hashlib.sha256(f.read()).hexdigest()
+
+    # Transcribe with normalization enabled
+    _ = transcriber.transcribe(sample_wav, normalize=True)
+
+    with open(sample_wav, "rb") as f:
+        after_hash = hashlib.sha256(f.read()).hexdigest()
+
+    assert before_hash == after_hash, "Saved WAV file was altered during transcription!"

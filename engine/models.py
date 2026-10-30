@@ -31,6 +31,9 @@ class SessionResult:
     speech_detected: bool
     sample_rate: int
     total_samples: int
+    peak_dbfs: float = -100.0
+    rms_dbfs: float = -100.0
+    input_device: str = "Unknown"
 
     @property
     def was_quiet_cancel(self) -> bool:
@@ -47,6 +50,7 @@ class TranscriptionResult:
     language: str
     audio_duration_sec: float
     processing_time_sec: float
+    applied_gain_db: float = 0.0
 
     @property
     def real_time_factor(self) -> float:

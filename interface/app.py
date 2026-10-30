@@ -172,8 +172,10 @@ class VoiceAssistantApp(rumps.App):
                 logger.error("Failed to reset UI on session end: %s", e, exc_info=True)
 
             logger.info(
-                "Session ended with no speech (%s); skipping transcription.",
+                "Session ended with no speech (%s) | Levels: Peak=%.1f dBFS, RMS=%.1f dBFS | skipping transcription.",
                 result.end_reason.value,
+                result.peak_dbfs,
+                result.rms_dbfs,
             )
             return
 
@@ -207,6 +209,7 @@ class VoiceAssistantApp(rumps.App):
         self._restore_idle_ui()
 
         # Print formatted report to console
+        gain_str = f" (+{tx_result.applied_gain_db:.1f} dB gain applied)" if tx_result.applied_gain_db > 0.05 else ""
         print(
             f"\n"
             f"┌─────────────────────────────────────────────────────────\n"
@@ -214,6 +217,8 @@ class VoiceAssistantApp(rumps.App):
             f"│ Mode:          {session_result.mode.value.capitalize()}\n"
             f"│ End Reason:    {session_result.end_reason.value}\n"
             f"│ Audio Length:  {tx_result.audio_duration_sec:.2f} s\n"
+            f"│ Audio Levels:  Peak: {session_result.peak_dbfs:.1f} dBFS | RMS: {session_result.rms_dbfs:.1f} dBFS{gain_str}\n"
+            f"│ Input Device:  {session_result.input_device}\n"
             f"│ Latency:       {tx_result.processing_time_sec:.3f} s (RTF: {tx_result.real_time_factor:.2f}x)\n"
             f"│ Audio File:    {session_result.audio_path.name if session_result.audio_path else 'None'}\n"
             f"└─────────────────────────────────────────────────────────\n",
@@ -221,9 +226,12 @@ class VoiceAssistantApp(rumps.App):
         )
 
         logger.info(
-            "[Heard] \"%s\" | Audio: %.2fs | Latency: %.3fs (RTF: %.2fx)",
+            "[Heard] \"%s\" | Audio: %.2fs | Peak: %.1fdBFS | RMS: %.1fdBFS | Gain: %.1fdB | Latency: %.3fs (RTF: %.2fx)",
             tx_result.text,
             tx_result.audio_duration_sec,
+            session_result.peak_dbfs,
+            session_result.rms_dbfs,
+            tx_result.applied_gain_db,
             tx_result.processing_time_sec,
             tx_result.real_time_factor,
         )

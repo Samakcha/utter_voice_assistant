@@ -10,7 +10,8 @@ from typing import Callable, Optional, Tuple, Union
 import wave
 import numpy as np
 
-from .config import WhisperConfig
+from .audio_utils import normalize_audio
+from .config import NormalizationConfig, WhisperConfig
 from .models import TranscriptionResult
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,7 @@ class BaseTranscriber(ABC):
         self,
         audio: Union[str, Path, np.ndarray],
         prompt: Optional[str] = None,
+        normalize: Optional[bool] = None,
     ) -> TranscriptionResult:
         """Transcribe audio into text."""
         pass
@@ -127,9 +129,15 @@ class MLXWhisperTranscriber(BaseTranscriber):
         self,
         config: WhisperConfig,
         on_ready: Optional[Callable[[], None]] = None,
+        normalization_config: Optional[NormalizationConfig] = None,
     ):
         self.config = config
         self.on_ready = on_ready
+        self.normalization_config = normalization_config or NormalizationConfig(
+            enabled=True,
+            target_peak_dbfs=-3.0,
+            max_gain_db=20.0,
+        )
         self.model_path = resolve_model_path(config.model_size, config.models_dir)
 
         self._queue: queue.Queue = queue.Queue()
@@ -158,12 +166,13 @@ class MLXWhisperTranscriber(BaseTranscriber):
         audio: Union[str, Path, np.ndarray],
         prompt: Optional[str] = None,
         callback: Optional[Callable[[TranscriptionResult], None]] = None,
+        normalize: Optional[bool] = None,
     ) -> TranscriptionResult:
         """
         Synchronously dispatch transcription to the dedicated worker thread and wait for result.
         """
         response_queue: queue.Queue = queue.Queue()
-        self._queue.put((audio, prompt, callback, response_queue))
+        self._queue.put((audio, prompt, callback, response_queue, None, normalize))
         result, exc = response_queue.get()
         if exc is not None:
             raise exc
@@ -175,12 +184,13 @@ class MLXWhisperTranscriber(BaseTranscriber):
         callback: Callable[[TranscriptionResult], None],
         on_error: Optional[Callable[[Exception], None]] = None,
         prompt: Optional[str] = None,
+        normalize: Optional[bool] = None,
     ) -> None:
         """Asynchronously enqueue transcription on the dedicated worker thread."""
         def _wrapper(res: TranscriptionResult):
             callback(res)
 
-        self._queue.put((audio, prompt, _wrapper, None, on_error))
+        self._queue.put((audio, prompt, _wrapper, None, on_error, normalize))
 
     def _worker_loop(self) -> None:
         """Long-lived dedicated worker thread running all MLX calls."""
@@ -226,14 +236,18 @@ class MLXWhisperTranscriber(BaseTranscriber):
             if len(task) == 4:
                 audio, prompt, callback, response_queue = task
                 on_error = None
-            else:
+                normalize = None
+            elif len(task) == 5:
                 audio, prompt, callback, response_queue, on_error = task
+                normalize = None
+            else:
+                audio, prompt, callback, response_queue, on_error, normalize = task
 
             result = None
             error = None
 
             try:
-                result = self._execute_transcription(audio, prompt)
+                result = self._execute_transcription(audio, prompt, normalize=normalize)
                 if callback is not None:
                     callback(result)
             except Exception as e:
@@ -250,11 +264,29 @@ class MLXWhisperTranscriber(BaseTranscriber):
         self,
         audio: Union[str, Path, np.ndarray],
         prompt: Optional[str],
+        normalize: Optional[bool] = None,
     ) -> TranscriptionResult:
         """Perform the actual mlx_whisper transcribe call on this worker thread."""
         import mlx_whisper
 
         audio_array, duration_sec = load_audio_array(audio)
+
+        # Determine whether to normalize audio before Whisper
+        should_normalize = (
+            normalize if normalize is not None else self.normalization_config.enabled
+        )
+        applied_gain_db = 0.0
+        if should_normalize:
+            audio_array, applied_gain_db = normalize_audio(
+                audio_array,
+                target_peak_dbfs=self.normalization_config.target_peak_dbfs,
+                max_gain_db=self.normalization_config.max_gain_db,
+            )
+            logger.debug(
+                "Normalized audio before transcription (applied gain: %.1f dB, target: %.1f dBFS)",
+                applied_gain_db,
+                self.normalization_config.target_peak_dbfs,
+            )
 
         active_prompt = prompt if prompt is not None else self.config.initial_prompt
         # Empty string should be passed as None so Whisper doesn't bias
@@ -278,6 +310,7 @@ class MLXWhisperTranscriber(BaseTranscriber):
             language=detected_language,
             audio_duration_sec=duration_sec,
             processing_time_sec=processing_time_sec,
+            applied_gain_db=applied_gain_db,
         )
 
     def close(self) -> None:

@@ -25,7 +25,7 @@ if venv_python.is_file() and sys.executable != str(venv_python):
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from engine.config import WhisperConfig
+from engine.config import NormalizationConfig, WhisperConfig
 from engine.transcriber import MLX_MODEL_REPO_MAP, MLXWhisperTranscriber, resolve_model_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -143,8 +143,11 @@ def run_benchmark(
     prompts: List[Optional[str]],
     models_dir: Path,
     auto_yes: bool = False,
+    normalization_options: List[bool] = [True],
+    target_peak_dbfs: float = -3.0,
+    max_gain_db: float = 20.0,
 ) -> None:
-    """Execute benchmark over WAV files across models and prompts."""
+    """Execute benchmark over WAV files across models, prompts, and normalization settings."""
     wav_files = sorted(wav_dir.glob("*.wav"))
     if not wav_files:
         print(f"Error: No .wav files found in directory: {wav_dir}")
@@ -153,8 +156,16 @@ def run_benchmark(
     print(f"\nFound {len(wav_files)} WAV file(s) in {wav_dir}")
     print(f"Models to evaluate: {', '.join(models)}")
     print(f"Prompts to evaluate: {[p if p is not None else '<none>' for p in prompts]}")
+    norm_labels = [("Enabled" if n else "Disabled") for n in normalization_options]
+    print(f"Normalization settings to evaluate: {norm_labels}")
 
     results = []
+
+    norm_cfg = NormalizationConfig(
+        enabled=True,
+        target_peak_dbfs=target_peak_dbfs,
+        max_gain_db=max_gain_db,
+    )
 
     for model_size in models:
         if not ensure_model_available(model_size, models_dir, auto_yes=auto_yes):
@@ -167,29 +178,36 @@ def run_benchmark(
             initial_prompt="",
             models_dir=models_dir,
         )
-        transcriber = MLXWhisperTranscriber(cfg)
+        transcriber = MLXWhisperTranscriber(cfg, normalization_config=norm_cfg)
         transcriber.wait_until_ready(timeout=60.0)
 
         for prompt in prompts:
             prompt_label = f"\"{prompt}\"" if prompt else "<none>"
 
-            for wav_file in wav_files:
-                res = transcriber.transcribe(wav_file, prompt=prompt)
+            for norm_flag in normalization_options:
+                norm_group_label = "On" if norm_flag else "Off"
 
-                expected = expected_map.get(wav_file.name, expected_map.get(str(wav_file), ""))
-                wer = compute_wer(expected, res.text) if expected else None
+                for wav_file in wav_files:
+                    res = transcriber.transcribe(wav_file, prompt=prompt, normalize=norm_flag)
 
-                results.append({
-                    "model": model_size,
-                    "prompt": prompt_label,
-                    "file": wav_file.name,
-                    "duration": res.audio_duration_sec,
-                    "transcript": res.text,
-                    "time": res.processing_time_sec,
-                    "rtf": res.real_time_factor,
-                    "wer": wer,
-                    "expected": expected,
-                })
+                    expected = expected_map.get(wav_file.name, expected_map.get(str(wav_file), ""))
+                    wer = compute_wer(expected, res.text) if expected else None
+
+                    gain_str = f"+{res.applied_gain_db:.1f}dB" if (norm_flag and res.applied_gain_db > 0.05) else ("0dB" if norm_flag else "Off")
+
+                    results.append({
+                        "model": model_size,
+                        "prompt": prompt_label,
+                        "norm_group": norm_group_label,
+                        "gain_str": gain_str,
+                        "file": wav_file.name,
+                        "duration": res.audio_duration_sec,
+                        "transcript": res.text,
+                        "time": res.processing_time_sec,
+                        "rtf": res.real_time_factor,
+                        "wer": wer,
+                        "expected": expected,
+                    })
 
         transcriber.close()
 
@@ -198,12 +216,12 @@ def run_benchmark(
         return
 
     # Print Detailed Results Table
-    print("\n" + "=" * 100)
+    print("\n" + "=" * 110)
     print("BENCHMARK RESULTS")
-    print("=" * 100)
+    print("=" * 110)
     has_wer = any(r["wer"] is not None for r in results)
 
-    header = f"| {'Model':<12} | {'Prompt':<12} | {'File':<25} | {'Audio(s)':<8} | {'Time(s)':<8} | {'RTF':<6} |"
+    header = f"| {'Model':<10} | {'Prompt':<10} | {'Norm':<8} | {'File':<24} | {'Audio(s)':<8} | {'Time(s)':<8} | {'RTF':<6} |"
     if has_wer:
         header += f" {'WER':<7} |"
     header += f" {'Transcript':<30} |"
@@ -212,7 +230,7 @@ def run_benchmark(
     print("|" + "-" * (len(header) - 2) + "|")
 
     for r in results:
-        row = f"| {r['model']:<12} | {r['prompt']:<12} | {r['file'][:25]:<25} | {r['duration']:>8.2f} | {r['time']:>8.3f} | {r['rtf']:>6.2f}x |"
+        row = f"| {r['model']:<10} | {r['prompt']:<10} | {r['gain_str']:<8} | {r['file'][:24]:<24} | {r['duration']:>8.2f} | {r['time']:>8.3f} | {r['rtf']:>6.2f}x |"
         if has_wer:
             wer_str = f"{r['wer'] * 100:>6.1f}%" if r["wer"] is not None else "   N/A "
             row += f" {wer_str:<7} |"
@@ -223,23 +241,23 @@ def run_benchmark(
         print(row)
 
     # Print Summary Averages Table
-    print("\n" + "=" * 80)
-    print("SUMMARY PER MODEL & PROMPT CONFIGURATION")
-    print("=" * 80)
+    print("\n" + "=" * 90)
+    print("SUMMARY PER MODEL, PROMPT & NORMALIZATION CONFIGURATION")
+    print("=" * 90)
 
-    summary_header = f"| {'Model':<12} | {'Prompt':<12} | {'Count':<6} | {'Avg Audio':<10} | {'Avg Latency':<12} | {'Avg RTF':<8} |"
+    summary_header = f"| {'Model':<10} | {'Prompt':<10} | {'Norm':<6} | {'Count':<6} | {'Avg Audio':<10} | {'Avg Latency':<12} | {'Avg RTF':<8} |"
     if has_wer:
         summary_header += f" {'Avg WER':<9} |"
     print(summary_header)
     print("|" + "-" * (len(summary_header) - 2) + "|")
 
-    # Group by (model, prompt)
+    # Group by (model, prompt, norm_group)
     from collections import defaultdict
     groups = defaultdict(list)
     for r in results:
-        groups[(r["model"], r["prompt"])].append(r)
+        groups[(r["model"], r["prompt"], r["norm_group"])].append(r)
 
-    for (model, prompt), items in groups.items():
+    for (model, prompt, norm_group), items in groups.items():
         count = len(items)
         avg_audio = sum(i["duration"] for i in items) / count
         avg_time = sum(i["time"] for i in items) / count
@@ -248,12 +266,12 @@ def run_benchmark(
         wer_items = [i["wer"] for i in items if i["wer"] is not None]
         avg_wer = (sum(wer_items) / len(wer_items)) if wer_items else None
 
-        row = f"| {model:<12} | {prompt:<12} | {count:>6} | {avg_audio:>9.2f}s | {avg_time:>10.3f}s | {avg_rtf:>7.2f}x |"
+        row = f"| {model:<10} | {prompt:<10} | {norm_group:<6} | {count:>6} | {avg_audio:>9.2f}s | {avg_time:>10.3f}s | {avg_rtf:>7.2f}x |"
         if has_wer:
             wer_str = f"{avg_wer * 100:>7.1f}%" if avg_wer is not None else "    N/A  "
             row += f" {wer_str:<9} |"
         print(row)
-    print("=" * 80 + "\n")
+    print("=" * 90 + "\n")
 
 
 def main() -> None:
@@ -265,6 +283,13 @@ def main() -> None:
     parser.add_argument("--compare-prompts", action="store_true", help="Compare with and without prompt.")
     parser.add_argument("--models-dir", type=Path, default=Path("./models"), help="Directory for local model weights.")
     parser.add_argument("-y", "--yes", action="store_true", help="Auto-confirm model downloads without prompting.")
+
+    # Normalization options
+    parser.add_argument("--normalize", action="store_true", default=None, help="Enable peak normalization (default).")
+    parser.add_argument("--no-normalize", action="store_true", help="Disable peak normalization.")
+    parser.add_argument("--compare-normalization", action="store_true", help="Compare without normalization vs with normalization.")
+    parser.add_argument("--target-peak", type=float, default=-3.0, help="Target peak level in dBFS (default -3.0).")
+    parser.add_argument("--max-gain", type=float, default=20.0, help="Maximum boost in dB (default 20.0).")
 
     args = parser.parse_args()
 
@@ -278,6 +303,13 @@ def main() -> None:
     else:
         prompts = [None]
 
+    if args.compare_normalization:
+        normalization_options = [False, True]
+    elif args.no_normalize:
+        normalization_options = [False]
+    else:
+        normalization_options = [True]
+
     run_benchmark(
         wav_dir=args.wav_dir,
         models=models,
@@ -285,6 +317,9 @@ def main() -> None:
         prompts=prompts,
         models_dir=args.models_dir,
         auto_yes=args.yes,
+        normalization_options=normalization_options,
+        target_peak_dbfs=args.target_peak,
+        max_gain_db=args.max_gain,
     )
 
 

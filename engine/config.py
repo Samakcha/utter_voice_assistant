@@ -48,6 +48,13 @@ class WhisperConfig:
 
 
 @dataclass(frozen=True)
+class NormalizationConfig:
+    enabled: bool
+    target_peak_dbfs: float
+    max_gain_db: float
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
     timeouts: TimeoutsConfig
@@ -55,6 +62,7 @@ class AppConfig:
     vad: VADConfig
     storage: StorageConfig
     whisper: WhisperConfig
+    normalization: NormalizationConfig
 
 
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
@@ -79,6 +87,13 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     models_dir = Path(whisper_data.get("models_dir", "./models"))
     if not models_dir.is_absolute():
         models_dir = (project_root / models_dir).resolve()
+
+    norm_data = data.get("normalization", {})
+    normalization = NormalizationConfig(
+        enabled=bool(norm_data.get("enabled", True)),
+        target_peak_dbfs=float(norm_data.get("target_peak_dbfs", -3.0)),
+        max_gain_db=float(norm_data.get("max_gain_db", 20.0)),
+    )
 
     return AppConfig(
         hotkeys=HotkeysConfig(
@@ -110,4 +125,5 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             initial_prompt=str(whisper_data.get("initial_prompt", "")),
             models_dir=models_dir,
         ),
+        normalization=normalization,
     )
