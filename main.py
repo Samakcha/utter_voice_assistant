@@ -6,7 +6,7 @@ Runs local menu bar app with global hotkeys, Silero VAD, and MLX Whisper transcr
 import logging
 import platform
 import sys
-from engine import MLXWhisperTranscriber, SessionManager, load_config
+from engine import AudioCapture, MLXWhisperTranscriber, SessionManager, load_config
 from interface import VoiceAssistantApp, format_permissions_report, get_all_permissions
 
 logging.basicConfig(
@@ -17,7 +17,7 @@ logging.basicConfig(
 logger = logging.getLogger("voice_assistant")
 
 
-def main() -> None:
+def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     # 0. Ensure NSApplication is initialized on macOS Main Thread first
     # This prevents Carbon TIS/TSM concurrency aborts when background threads start
     import AppKit
@@ -64,7 +64,7 @@ def main() -> None:
     print("\n" + report + "\n", flush=True)
 
     if "--permissions" in sys.argv or "--check" in sys.argv:
-        return
+        return None
 
     # 4. Initialize Engine and Interface
     session_manager = SessionManager(config=config)
@@ -78,7 +78,12 @@ def main() -> None:
     # 5. Start Global Hotkeys and Run App
     app.start_listeners()
     logger.info("Menu bar app initialized. Ready for voice sessions.")
+
+    if not run_loop:
+        return app
+
     app.run()
+    return app
 
 
 if __name__ == "__main__":
