@@ -4,17 +4,22 @@ import logging
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
-from typing import Optional
+from typing import Dict, List, Optional
 import AppKit
 import rumps
 
 from engine.actions import ActionResult, execute_action_async
+from engine.chunk_joiner import join_transcription_chunks
 from engine.commands import CommandMatch, match_command
 from engine.config import AppConfig
-from engine.models import EndReason, SessionMode, SessionResult, TranscriptionResult
+from engine.insertion import format_dictation_insertion
+from engine.models import DictationChunk, EndReason, SessionMode, SessionResult, TranscriptionResult
 from engine.session import SessionManager
+from engine.stop_phrases import detect_stop_phrase, validate_stop_phrases
 from engine.transcriber import BaseTranscriber
+from .clipboard import paste_and_restore
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
 from .overlay import VoiceAssistantOverlay
 from .permissions import format_permissions_report, get_all_permissions, open_settings_pane
@@ -23,8 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 def run_on_main_thread(fn, *args):
-    """Schedule a callable to run on macOS main UI thread."""
-    AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(lambda: fn(*args))
+    """Run callable on macOS main thread. Executes immediately if already on main thread."""
+    if AppKit.NSThread.isMainThread():
+        fn(*args)
+    else:
+        AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(lambda: fn(*args))
 
 
 class VoiceAssistantApp(rumps.App):
@@ -61,9 +69,22 @@ class VoiceAssistantApp(rumps.App):
         except Exception as e:
             logger.warning("Could not initialize overlay: %s", e)
 
+        # Validate configured stop phrases at startup
+        validate_stop_phrases(config.dictation.stop_phrases)
+
+        # Dictation session state tracking
+        self._dictation_session_id: Optional[str] = None
+        self._dictation_chunks: Dict[int, str] = {}
+        self._dictation_latencies: Dict[int, float] = {}
+        self._dictation_pending_chunks: int = 0
+        self._dictation_session_result: Optional[SessionResult] = None
+        self._dictation_session_ended: bool = False
+        self._dictation_lock = threading.Lock()
+
         # Connect session lifecycle callbacks
         self.session_manager.on_session_start = self._on_session_start
         self.session_manager.on_session_end = self._on_session_end
+        self.session_manager.on_dictation_chunk = self._on_dictation_chunk
 
         # Initialize hotkey manager
         self.hotkey_manager = HotkeyManager(
@@ -149,12 +170,26 @@ class VoiceAssistantApp(rumps.App):
 
     def _on_cancel_hotkey(self) -> None:
         """Handle Esc cancellation."""
+        with self._dictation_lock:
+            self._dictation_session_id = None
+            self._dictation_chunks.clear()
+            self._dictation_pending_chunks = 0
+            self._dictation_session_ended = False
         if self.overlay is not None:
             self.overlay.hide()
         self.session_manager.cancel_session(EndReason.ESC)
 
     def _on_session_start(self, mode: SessionMode) -> None:
         """Callback from engine when listening session begins."""
+        if mode == SessionMode.DICTATION:
+            with self._dictation_lock:
+                self._dictation_session_id = self.session_manager.current_session_id
+                self._dictation_chunks.clear()
+                self._dictation_latencies.clear()
+                self._dictation_pending_chunks = 0
+                self._dictation_session_result = None
+                self._dictation_session_ended = False
+
         if self.overlay is not None:
             self.overlay.show_listening(mode.value)
 
@@ -168,35 +203,152 @@ class VoiceAssistantApp(rumps.App):
 
         run_on_main_thread(_update_ui)
 
+    def _on_dictation_chunk(self, chunk: DictationChunk) -> None:
+        """Callback from engine when a dictation speech chunk is ready for transcription."""
+        with self._dictation_lock:
+            if chunk.session_id != self._dictation_session_id or self._dictation_session_id is None:
+                logger.debug("Dropping chunk %d for inactive/stale dictation session", chunk.chunk_index)
+                return
+            self._dictation_pending_chunks += 1
+            session_id = chunk.session_id
+            chunk_idx = chunk.chunk_index
+            is_final = chunk.is_final
+
+            # Context prompt from previous chunk
+            prompt = None
+            if self.config.dictation.context_prompt and chunk_idx > 0:
+                completed = [self._dictation_chunks[i] for i in sorted(self._dictation_chunks.keys()) if i < chunk_idx]
+                if completed:
+                    prompt = completed[-1]
+
+        if self.transcriber is None:
+            logger.warning("No transcriber available for dictation chunk %d", chunk_idx)
+            self._handle_dictation_chunk_result(
+                session_id,
+                chunk_idx,
+                TranscriptionResult(text="", language="en", audio_duration_sec=0.0, processing_time_sec=0.0),
+                is_final,
+            )
+            return
+
+        def _on_success(tx_res: TranscriptionResult):
+            self._handle_dictation_chunk_result(session_id, chunk_idx, tx_res, is_final)
+
+        def _on_err(err: Exception):
+            logger.error("Error transcribing dictation chunk %d: %s", chunk_idx, err)
+            self._handle_dictation_chunk_result(
+                session_id,
+                chunk_idx,
+                TranscriptionResult(text="", language="en", audio_duration_sec=0.0, processing_time_sec=0.0),
+                is_final,
+            )
+
+        self.transcriber.transcribe_async(
+            audio=chunk.audio,
+            callback=_on_success,
+            on_error=_on_err,
+            prompt=prompt,
+            normalize=self.config.normalization.enabled,
+        )
+
+    def _handle_dictation_chunk_result(
+        self,
+        session_id: str,
+        chunk_index: int,
+        tx_result: TranscriptionResult,
+        is_final: bool,
+    ) -> None:
+        """Process completed transcription of a dictation chunk."""
+        should_finalize = False
+        stop_phrase_detected = False
+        with self._dictation_lock:
+            if session_id != self._dictation_session_id or self._dictation_session_id is None:
+                logger.debug("Dropping chunk result for stale session %s", session_id)
+                return
+
+            self._dictation_pending_chunks = max(0, self._dictation_pending_chunks - 1)
+            self._dictation_chunks[chunk_index] = tx_result.text
+            self._dictation_latencies[chunk_index] = tx_result.processing_time_sec
+
+            # Check if accumulated text ends with a stop phrase
+            ordered_texts = [self._dictation_chunks[i] for i in sorted(self._dictation_chunks.keys())]
+            joined_so_far = join_transcription_chunks(ordered_texts)
+            match = detect_stop_phrase(
+                joined_so_far,
+                self.config.dictation.stop_phrases,
+                self.config.dictation.fuzzy_tolerance,
+            )
+            if match is not None and not self._dictation_session_ended:
+                stop_phrase_detected = True
+
+            if self._dictation_session_ended and self._dictation_pending_chunks == 0:
+                should_finalize = True
+
+        if stop_phrase_detected:
+            logger.info("Stop phrase '%s' detected during active dictation; stopping session.", match.matched_phrase)
+            self.session_manager.stop_session(EndReason.STOP_PHRASE)
+
+        if should_finalize:
+            self._finalize_dictation_insertion(session_id)
+
     def _on_session_end(self, result: SessionResult) -> None:
         """Callback from engine when listening session ends."""
-        # 1. If NO speech was detected or canceled by Esc, do NOT transcribe
-        if result.end_reason == EndReason.ESC or not result.speech_detected or not result.audio_path or not result.audio_path.exists():
+        # 1. If canceled by Esc:
+        if result.end_reason == EndReason.ESC:
+            if result.mode == SessionMode.DICTATION:
+                with self._dictation_lock:
+                    self._dictation_session_id = None
+                    self._dictation_chunks.clear()
+                    self._dictation_pending_chunks = 0
             if self.overlay is not None:
                 self.overlay.hide()
+            self._restore_idle_ui()
+            logger.info("Session canceled by Esc; skipping transcription/insertion.")
+            return
 
-            def _reset_idle():
-                if self.is_running:
-                    self.title = self.TITLE_IDLE
-                    self.status_item.title = "Status: Ready (Mic closed)"
-                else:
-                    self.title = self.TITLE_STOPPED
-                    self.status_item.title = "Status: Stopped (Inactive)"
+        # 2. DICTATION MODE
+        if result.mode == SessionMode.DICTATION:
+            if not result.speech_detected and not self._dictation_chunks:
+                if self.overlay is not None:
+                    self.overlay.show_dictation_empty()
+                self._restore_idle_ui()
+                logger.info("Dictation ended with no speech; pasting nothing.")
+                return
 
-            try:
-                run_on_main_thread(_reset_idle)
-            except Exception as e:
-                logger.error("Failed to reset UI on session end: %s", e, exc_info=True)
+            # Change 5: Show "Transcribing..." in overlay until all chunks finish and paste happens
+            if self.overlay is not None:
+                self.overlay.show_transcribing()
 
+            def _set_transcribing_ui():
+                self.title = self.TITLE_TRANSCRIBING
+                self.status_item.title = "Status: Transcribing final dictation..."
+
+            run_on_main_thread(_set_transcribing_ui)
+
+            should_finalize = False
+            with self._dictation_lock:
+                self._dictation_session_result = result
+                self._dictation_session_ended = True
+                if self._dictation_pending_chunks == 0:
+                    should_finalize = True
+
+            if should_finalize:
+                self._finalize_dictation_insertion(result.session_id)
+            return
+
+        # 3. COMMAND MODE: verify speech was detected and WAV exists
+        if not result.speech_detected or not result.audio_path or not result.audio_path.exists():
+            if self.overlay is not None:
+                self.overlay.hide()
+            self._restore_idle_ui()
             logger.info(
-                "Session ended with no speech (%s) | Levels: Peak=%.1f dBFS, RMS=%.1f dBFS | skipping transcription.",
+                "Command session ended with no speech (%s) | Levels: Peak=%.1f dBFS, RMS=%.1f dBFS | skipping transcription.",
                 result.end_reason.value,
                 result.peak_dbfs,
                 result.rms_dbfs,
             )
             return
 
-        # 2. Speech was detected: switch overlay and menu bar to Transcribing... state
         if self.overlay is not None:
             self.overlay.show_transcribing()
 
@@ -209,7 +361,7 @@ class VoiceAssistantApp(rumps.App):
         except Exception as e:
             logger.error("Failed to set transcribing UI: %s", e, exc_info=True)
 
-        # 3. Asynchronously transcribe on the dedicated background worker thread
+        # Asynchronously transcribe on the dedicated background worker thread
         if self.transcriber is not None:
             self.transcriber.transcribe_async(
                 audio=result.audio_path,
@@ -222,43 +374,93 @@ class VoiceAssistantApp(rumps.App):
                 self.overlay.hide()
             self._restore_idle_ui()
 
+    def _finalize_dictation_insertion(self, session_id: str) -> None:
+        """Join all transcribed chunks, strip stop phrase, format text, and paste."""
+        with self._dictation_lock:
+            if session_id != self._dictation_session_id:
+                return
+            chunks_list = [self._dictation_chunks[i] for i in sorted(self._dictation_chunks.keys())]
+            latencies = [self._dictation_latencies.get(i, 0.0) for i in sorted(self._dictation_chunks.keys())]
+            session_result = self._dictation_session_result
+            # Invalidate session_id so late events are discarded
+            self._dictation_session_id = None
+
+        raw_joined = join_transcription_chunks(chunks_list)
+
+        # Final stop phrase check and cleanup
+        match = detect_stop_phrase(
+            raw_joined,
+            self.config.dictation.stop_phrases,
+            self.config.dictation.fuzzy_tolerance,
+        )
+        if match is not None:
+            final_text = match.cleaned_text
+            matched_phrase_str = f'"{match.matched_phrase}"'
+            end_reason_str = EndReason.STOP_PHRASE.value
+        else:
+            final_text = raw_joined
+            matched_phrase_str = "None"
+            end_reason_str = session_result.end_reason.value if session_result else "unknown"
+
+        formatted = format_dictation_insertion(
+            final_text,
+            trailing_space=self.config.dictation.trailing_space,
+        )
+
+        if not formatted.should_insert:
+            self._restore_idle_ui()
+            if self.overlay is not None:
+                self.overlay.show_dictation_empty()
+            logger.info("[Dictation Complete] No speech or empty text; nothing to insert.")
+            return
+
+        t_paste_0 = time.perf_counter()
+
+        def _on_paste_done(restored: bool):
+            t_paste_1 = time.perf_counter()
+            paste_duration_ms = (t_paste_1 - t_paste_0) * 1000.0
+            self._restore_idle_ui()
+            if self.overlay is not None:
+                self.overlay.show_dictation_inserted(formatted.word_count)
+
+            lat_str = ", ".join(f"{l:.3f}s" for l in latencies) if latencies else "0.0s"
+            logger.info(
+                "[Dictation Complete] Chunks: %d | Transcribe Latencies: [%s] | End Reason: %s (%s) | Words: %d | Paste Duration: %.1fms",
+                len(chunks_list),
+                lat_str,
+                end_reason_str,
+                matched_phrase_str,
+                formatted.word_count,
+                paste_duration_ms,
+            )
+            print(
+                f"\n"
+                f"┌─────────────────────────────────────────────────────────\n"
+                f"│ [Dictation Inserted] \"{formatted.text}\"\n"
+                f"│ Words:            {formatted.word_count}\n"
+                f"│ Chunks:           {len(chunks_list)} (Transcribe times: [{lat_str}])\n"
+                f"│ End Reason:       {end_reason_str} ({matched_phrase_str})\n"
+                f"│ Paste Duration:   {paste_duration_ms:.1f} ms\n"
+                f"│ Audio File:       {session_result.audio_path.name if session_result and session_result.audio_path else 'None'}\n"
+                f"└─────────────────────────────────────────────────────────\n",
+                flush=True,
+            )
+
+        run_on_main_thread(
+            lambda: paste_and_restore(
+                text=formatted.text,
+                config=self.config.dictation,
+                on_complete=_on_paste_done,
+            )
+        )
+
     def _on_transcription_success(
         self,
         tx_result: TranscriptionResult,
         session_result: SessionResult,
     ) -> None:
-        """Invoked when transcription completes on worker thread."""
+        """Invoked when command mode transcription completes on worker thread."""
         self._restore_idle_ui()
-
-        # Handle Dictation Mode (Step 3: dictation never triggers the rule layer)
-        if session_result.mode == SessionMode.DICTATION:
-            if self.overlay is not None:
-                self.overlay.hide()
-
-            gain_str = f" (+{tx_result.applied_gain_db:.1f} dB gain applied)" if tx_result.applied_gain_db > 0.05 else ""
-            print(
-                f"\n"
-                f"┌─────────────────────────────────────────────────────────\n"
-                f"│ [Dictation Heard] \"{tx_result.text}\"\n"
-                f"│ Mode:          Dictation\n"
-                f"│ End Reason:    {session_result.end_reason.value}\n"
-                f"│ Audio Length:  {tx_result.audio_duration_sec:.2f} s\n"
-                f"│ Audio Levels:  Peak: {session_result.peak_dbfs:.1f} dBFS | RMS: {session_result.rms_dbfs:.1f} dBFS{gain_str}\n"
-                f"│ Input Device:  {session_result.input_device}\n"
-                f"│ Latency:       {tx_result.processing_time_sec:.3f} s (RTF: {tx_result.real_time_factor:.2f}x)\n"
-                f"│ Audio File:    {session_result.audio_path.name if session_result.audio_path else 'None'}\n"
-                f"└─────────────────────────────────────────────────────────\n",
-                flush=True,
-            )
-            try:
-                rumps.notification(
-                    title="Voice Assistant",
-                    subtitle="Dictation Heard",
-                    message=f"\"{tx_result.text}\"",
-                )
-            except Exception as e:
-                logger.debug("Could not display notification: %s", e)
-            return
 
         # Handle Command Mode: Evaluate rule layer
         t_rule_0 = time.perf_counter()

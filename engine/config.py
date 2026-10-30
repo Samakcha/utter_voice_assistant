@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import tomllib
-from typing import Optional
+from typing import List, Optional
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,18 @@ class NormalizationConfig:
 
 
 @dataclass(frozen=True)
+class DictationConfig:
+    chunk_pause_sec: float
+    min_speech_ms: int
+    stop_phrases: List[str]
+    fuzzy_tolerance: float
+    context_prompt: bool
+    clipboard_restore_delay_ms: int
+    modifier_release_timeout_ms: int
+    trailing_space: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
     timeouts: TimeoutsConfig
@@ -63,6 +75,7 @@ class AppConfig:
     storage: StorageConfig
     whisper: WhisperConfig
     normalization: NormalizationConfig
+    dictation: DictationConfig
 
 
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
@@ -93,6 +106,18 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         enabled=bool(norm_data.get("enabled", True)),
         target_peak_dbfs=float(norm_data.get("target_peak_dbfs", -3.0)),
         max_gain_db=float(norm_data.get("max_gain_db", 20.0)),
+    )
+
+    dict_data = data.get("dictation", {})
+    dictation = DictationConfig(
+        chunk_pause_sec=float(dict_data.get("chunk_pause_sec", 0.8)),
+        min_speech_ms=int(dict_data.get("min_speech_ms", 250)),
+        stop_phrases=[str(p) for p in dict_data.get("stop_phrases", ["stop dictation", "end dictation"])],
+        fuzzy_tolerance=float(dict_data.get("fuzzy_tolerance", 0.2)),
+        context_prompt=bool(dict_data.get("context_prompt", True)),
+        clipboard_restore_delay_ms=int(dict_data.get("clipboard_restore_delay_ms", 400)),
+        modifier_release_timeout_ms=int(dict_data.get("modifier_release_timeout_ms", 500)),
+        trailing_space=bool(dict_data.get("trailing_space", False)),
     )
 
     return AppConfig(
@@ -126,4 +151,5 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             models_dir=models_dir,
         ),
         normalization=normalization,
+        dictation=dictation,
     )

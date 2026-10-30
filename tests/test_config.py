@@ -40,3 +40,13 @@ def test_config_loading():
     assert config.normalization.enabled is True
     assert config.normalization.target_peak_dbfs == -3.0
     assert config.normalization.max_gain_db == 20.0
+
+    # Dictation
+    assert config.dictation.chunk_pause_sec == 0.8
+    assert config.dictation.min_speech_ms == 250
+    assert config.dictation.stop_phrases == ["stop dictation", "end dictation"]
+    assert config.dictation.fuzzy_tolerance == 0.2
+    assert config.dictation.context_prompt is True
+    assert config.dictation.clipboard_restore_delay_ms == 400
+    assert config.dictation.modifier_release_timeout_ms == 500
+    assert config.dictation.trailing_space is False

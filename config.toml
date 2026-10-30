@@ -68,3 +68,28 @@ initial_prompt = ""
 
 # Local directory where downloaded Whisper model weights are stored
 models_dir = "./models"
+
+[dictation]
+# Duration of silence pause (in seconds) during active dictation that triggers background chunk transcription
+chunk_pause_sec = 0.8
+
+# Minimum duration of detected speech (in milliseconds) required in a chunk to send to Whisper (avoids coughs/clicks)
+min_speech_ms = 250
+
+# Stop phrases that automatically end dictation when spoken at the end of speech
+stop_phrases = ["stop dictation", "end dictation"]
+
+# Maximum fuzzy matching edit distance ratio relative to stop phrase length (0.2 = ~2 edits for 13-14 char phrases)
+fuzzy_tolerance = 0.2
+
+# Whether to pass the previous chunk's text as initial prompt context to Whisper
+context_prompt = true
+
+# Time to wait (in milliseconds) after Cmd+V before restoring original clipboard contents
+clipboard_restore_delay_ms = 400
+
+# Maximum time to wait (in milliseconds) for Control and Option keys to be released before sending Cmd+V
+modifier_release_timeout_ms = 500
+
+# Whether to append a trailing space after the inserted text
+trailing_space = false

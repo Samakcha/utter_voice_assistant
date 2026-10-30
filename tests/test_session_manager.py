@@ -11,6 +11,7 @@ import numpy as np
 from engine.config import (
     AppConfig,
     AudioConfig,
+    DictationConfig,
     HotkeysConfig,
     NormalizationConfig,
     StorageConfig,
@@ -89,6 +90,16 @@ def create_test_config(temp_dir: Path) -> AppConfig:
             enabled=True,
             target_peak_dbfs=-3.0,
             max_gain_db=20.0,
+        ),
+        dictation=DictationConfig(
+            chunk_pause_sec=0.1,
+            min_speech_ms=50,
+            stop_phrases=["stop dictation", "end dictation"],
+            fuzzy_tolerance=0.2,
+            context_prompt=True,
+            clipboard_restore_delay_ms=50,
+            modifier_release_timeout_ms=50,
+            trailing_space=False,
         ),
     )
 

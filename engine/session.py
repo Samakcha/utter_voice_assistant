@@ -1,18 +1,20 @@
 """Session manager coordinating audio capture, VAD state, and session lifecycles."""
 
+import collections
 from datetime import datetime
 import logging
 from pathlib import Path
 import threading
 import time
-from typing import Callable, List, Optional
+from typing import Callable, Deque, List, Optional
+import uuid
 import wave
 import numpy as np
 
 from .audio_capture import AudioCapture
 from .audio_utils import compute_audio_levels
 from .config import AppConfig
-from .models import EndReason, SessionMode, SessionResult
+from .models import DictationChunk, EndReason, SessionMode, SessionResult
 from .vad import SileroVAD
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ class SessionManager:
         audio_capture: Optional[AudioCapture] = None,
         on_session_start: Optional[Callable[[SessionMode], None]] = None,
         on_session_end: Optional[Callable[[SessionResult], None]] = None,
+        on_dictation_chunk: Optional[Callable[[DictationChunk], None]] = None,
     ):
         self._config = config
         self._vad = vad or SileroVAD(
@@ -45,16 +48,26 @@ class SessionManager:
 
         self.on_session_start = on_session_start
         self.on_session_end = on_session_end
+        self.on_dictation_chunk = on_dictation_chunk
 
         # Session state
         self._lock = threading.RLock()
         self._current_mode: Optional[SessionMode] = None
+        self._current_session_id: str = ""
         self._is_active: bool = False
         self._speech_detected: bool = False
         self._consecutive_speech_chunks: int = 0
         self._session_start_time: float = 0.0
         self._last_speech_time: Optional[float] = None
         self._audio_chunks: List[np.ndarray] = []
+
+        # Dictation chunking state
+        self._dictation_chunk_index: int = 0
+        self._dictation_chunk_frames: List[np.ndarray] = []
+        self._dictation_speech_frames_count: int = 0
+        self._dictation_chunk_active: bool = False
+        self._dictation_trailing_silence_frames: int = 0
+        self._dictation_pre_speech_ring_buffer: Deque[np.ndarray] = collections.deque(maxlen=10)
 
         # Ensure recordings directory exists
         self._config.storage.recordings_dir.mkdir(parents=True, exist_ok=True)
@@ -70,6 +83,12 @@ class SessionManager:
         """Currently active session mode, or None if idle."""
         with self._lock:
             return self._current_mode
+
+    @property
+    def current_session_id(self) -> str:
+        """Unique ID for the currently active session, or empty string if idle."""
+        with self._lock:
+            return self._current_session_id
 
     def start_session(self, mode: SessionMode) -> bool:
         """
@@ -92,12 +111,21 @@ class SessionManager:
 
             logger.info("Starting new voice session: mode=%s", mode.value)
             self._current_mode = mode
+            self._current_session_id = str(uuid.uuid4())
             self._is_active = True
             self._speech_detected = False
             self._consecutive_speech_chunks = 0
             self._audio_chunks = []
             self._session_start_time = time.monotonic()
             self._last_speech_time = None
+
+            # Dictation chunking state reset
+            self._dictation_chunk_index = 0
+            self._dictation_chunk_frames = []
+            self._dictation_speech_frames_count = 0
+            self._dictation_chunk_active = False
+            self._dictation_trailing_silence_frames = 0
+            self._dictation_pre_speech_ring_buffer.clear()
 
             # Reset VAD internal states
             self._vad.reset()
@@ -128,18 +156,42 @@ class SessionManager:
         Thread-safe: can be called from hotkeys, UI thread, or internal worker.
         """
         auto_stop_time = time.monotonic()
+        final_dictation_chunk: Optional[DictationChunk] = None
         with self._lock:
             if not self._is_active:
                 return None
 
             # Mark inactive immediately to stop receiving further chunks
             self._is_active = False
+            session_id = self._current_session_id
             mode = self._current_mode or SessionMode.COMMAND
             self._current_mode = None
             chunks_to_save = list(self._audio_chunks)
             self._audio_chunks = []
             speech_detected = self._speech_detected
             start_time = self._session_start_time
+
+            # Final chunk extraction for dictation if un-emitted speech exists
+            if mode == SessionMode.DICTATION and reason != EndReason.ESC:
+                if self._dictation_chunk_active and self._dictation_speech_frames_count > 0:
+                    speech_ms = self._dictation_speech_frames_count * 32.0
+                    if speech_ms >= self._config.dictation.min_speech_ms:
+                        chunk_audio = (
+                            np.concatenate(self._dictation_chunk_frames)
+                            if self._dictation_chunk_frames
+                            else np.array([], dtype=np.float32)
+                        )
+                        if chunk_audio.size > 0:
+                            final_dictation_chunk = DictationChunk(
+                                session_id=session_id,
+                                chunk_index=self._dictation_chunk_index,
+                                audio=chunk_audio,
+                                speech_duration_ms=speech_ms,
+                                is_final=True,
+                            )
+                            self._dictation_chunk_index += 1
+            self._dictation_chunk_frames = []
+            self._dictation_chunk_active = False
 
         # Finalize outside the lock
         return self._finalize_stop(
@@ -150,6 +202,8 @@ class SessionManager:
             start_time=start_time,
             trailing_silence_sec=0.0,
             auto_stop_time=auto_stop_time,
+            session_id=session_id,
+            final_dictation_chunk=final_dictation_chunk,
         )
 
     def _finalize_stop(
@@ -161,12 +215,21 @@ class SessionManager:
         start_time: float,
         trailing_silence_sec: float = 0.0,
         auto_stop_time: float = 0.0,
+        session_id: str = "",
+        final_dictation_chunk: Optional[DictationChunk] = None,
     ) -> Optional[SessionResult]:
         """
         Stop the audio hardware stream, write WAV, prune old files,
         log session details, and invoke UI callback.
         Guaranteed never to deadlock and never to swallow exceptions.
         """
+        # If there is a final dictation chunk, dispatch it before session end callback
+        if final_dictation_chunk is not None and self.on_dictation_chunk is not None:
+            try:
+                self.on_dictation_chunk(final_dictation_chunk)
+            except Exception as e:
+                logger.error("Error in on_dictation_chunk callback for final chunk: %s", e, exc_info=True)
+
         result: Optional[SessionResult] = None
         try:
             # 1. Stop audio capture hardware
@@ -210,6 +273,7 @@ class SessionManager:
                 speech_detected=speech_detected,
                 sample_rate=self._config.audio.sample_rate,
                 total_samples=total_samples,
+                session_id=session_id,
                 peak_dbfs=peak_dbfs,
                 rms_dbfs=rms_dbfs,
                 input_device=device_name,
@@ -246,6 +310,7 @@ class SessionManager:
                     speech_detected=speech_detected,
                     sample_rate=self._config.audio.sample_rate,
                     total_samples=0,
+                    session_id=session_id,
                 )
         finally:
             # 7. Always invoke UI callback, even on error, to restore idle state
@@ -265,11 +330,14 @@ class SessionManager:
         """
         session_to_stop: Optional[EndReason] = None
         chunks_to_save: List[np.ndarray] = []
+        chunk_to_emit: Optional[DictationChunk] = None
+        final_dictation_chunk: Optional[DictationChunk] = None
         mode = SessionMode.COMMAND
         speech_detected = False
         start_time = 0.0
         trailing_silence_sec = 0.0
         auto_stop_time = 0.0
+        session_id = ""
 
         with self._lock:
             if not self._is_active:
@@ -314,35 +382,108 @@ class SessionManager:
                                 auto_stop_time = now
 
             elif self._current_mode == SessionMode.DICTATION:
-                # Dictation mode: continuous recording through pauses under dictation_silence_sec
                 if is_speech:
+                    if not self._dictation_chunk_active:
+                        self._dictation_chunk_active = True
+                        self._dictation_chunk_frames = list(self._dictation_pre_speech_ring_buffer)
+                        self._dictation_pre_speech_ring_buffer.clear()
+                        self._dictation_speech_frames_count = 0
+                        self._dictation_trailing_silence_frames = 0
+                    self._dictation_chunk_frames.append(chunk)
+                    self._dictation_speech_frames_count += 1
+                    self._dictation_trailing_silence_frames = 0
+                    self._last_speech_time = now
                     if not self._speech_detected:
                         self._consecutive_speech_chunks += 1
                         if self._consecutive_speech_chunks >= self._config.vad.min_speech_chunks:
                             self._speech_detected = True
-                            self._last_speech_time = now
                             logger.info("Dictation mode: speech onset detected (prob=%.3f).", prob)
-                    else:
-                        self._last_speech_time = now
                 else:
                     self._consecutive_speech_chunks = 0
-                    reference_time = self._last_speech_time if self._last_speech_time is not None else self._session_start_time
-                    silence_duration = now - reference_time
-                    if silence_duration >= self._config.timeouts.dictation_silence_sec:
-                        logger.info("Dictation mode: silence threshold of %.2fs reached; auto-stopping.", silence_duration)
-                        session_to_stop = EndReason.SILENCE
-                        trailing_silence_sec = silence_duration
-                        auto_stop_time = now
+                    if not self._dictation_chunk_active:
+                        self._dictation_pre_speech_ring_buffer.append(chunk)
+                    else:
+                        if self._dictation_trailing_silence_frames < 10:  # ~300 ms post-speech padding
+                            self._dictation_chunk_frames.append(chunk)
+                            self._dictation_trailing_silence_frames += 1
+
+                        if self._last_speech_time is not None:
+                            silence_duration = now - self._last_speech_time
+                            # Check pause threshold for progressive chunk transcription
+                            if silence_duration >= self._config.dictation.chunk_pause_sec:
+                                speech_ms = self._dictation_speech_frames_count * 32.0
+                                if speech_ms >= self._config.dictation.min_speech_ms:
+                                    chunk_audio = (
+                                        np.concatenate(self._dictation_chunk_frames)
+                                        if self._dictation_chunk_frames
+                                        else np.array([], dtype=np.float32)
+                                    )
+                                    if chunk_audio.size > 0:
+                                        chunk_to_emit = DictationChunk(
+                                            session_id=self._current_session_id,
+                                            chunk_index=self._dictation_chunk_index,
+                                            audio=chunk_audio,
+                                            speech_duration_ms=speech_ms,
+                                            is_final=False,
+                                        )
+                                        self._dictation_chunk_index += 1
+                                else:
+                                    logger.debug(
+                                        "Skipping dictation chunk with insufficient speech (%.1f ms < %d ms)",
+                                        speech_ms,
+                                        self._config.dictation.min_speech_ms,
+                                    )
+                                self._dictation_chunk_frames = []
+                                self._dictation_speech_frames_count = 0
+                                self._dictation_chunk_active = False
+                                self._dictation_trailing_silence_frames = 0
+                                self._dictation_pre_speech_ring_buffer.clear()
+
+                            if silence_duration >= self._config.timeouts.dictation_silence_sec:
+                                logger.info("Dictation mode: silence threshold of %.2fs reached; auto-stopping.", silence_duration)
+                                session_to_stop = EndReason.SILENCE
+                                trailing_silence_sec = silence_duration
+                                auto_stop_time = now
 
             # If auto-stopping, snapshot data and transition state immediately inside lock
             if session_to_stop is not None:
                 self._is_active = False
+                session_id = self._current_session_id
                 mode = self._current_mode or SessionMode.COMMAND
                 self._current_mode = None
                 chunks_to_save = list(self._audio_chunks)
                 self._audio_chunks = []
                 speech_detected = self._speech_detected
                 start_time = self._session_start_time
+
+                # Check if there is an un-emitted chunk when auto-stopping
+                if mode == SessionMode.DICTATION and session_to_stop != EndReason.ESC:
+                    if self._dictation_chunk_active and self._dictation_speech_frames_count > 0:
+                        speech_ms = self._dictation_speech_frames_count * 32.0
+                        if speech_ms >= self._config.dictation.min_speech_ms:
+                            chunk_audio = (
+                                np.concatenate(self._dictation_chunk_frames)
+                                if self._dictation_chunk_frames
+                                else np.array([], dtype=np.float32)
+                            )
+                            if chunk_audio.size > 0:
+                                final_dictation_chunk = DictationChunk(
+                                    session_id=session_id,
+                                    chunk_index=self._dictation_chunk_index,
+                                    audio=chunk_audio,
+                                    speech_duration_ms=speech_ms,
+                                    is_final=True,
+                                )
+                                self._dictation_chunk_index += 1
+                self._dictation_chunk_frames = []
+                self._dictation_chunk_active = False
+
+        # Emit dictation chunk to callback outside the lock
+        if chunk_to_emit is not None and self.on_dictation_chunk is not None:
+            try:
+                self.on_dictation_chunk(chunk_to_emit)
+            except Exception as e:
+                logger.error("Error in on_dictation_chunk callback: %s", e, exc_info=True)
 
         # Dispatch finalization to a separate thread to prevent PortAudio callback deadlock
         if session_to_stop is not None:
@@ -356,6 +497,8 @@ class SessionManager:
                     start_time,
                     trailing_silence_sec,
                     auto_stop_time,
+                    session_id,
+                    final_dictation_chunk,
                 ),
                 name="session-auto-stop",
                 daemon=True,

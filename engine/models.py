@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+import numpy as np
 
 
 class SessionMode(str, Enum):
@@ -19,6 +20,17 @@ class EndReason(str, Enum):
     ESC = "esc"                  # Canceled by pressing Esc
     NO_SPEECH = "no_speech"      # Canceled quietly because no speech detected within time limit
     STOPPED = "stopped"          # Stopped because the app was stopped/paused
+    STOP_PHRASE = "stop_phrase"  # Ended by spoken stop phrase at tail of dictation
+
+
+@dataclass(frozen=True)
+class DictationChunk:
+    """Chunk of audio extracted during dictation pause for progressive transcription."""
+    session_id: str
+    chunk_index: int
+    audio: np.ndarray
+    speech_duration_ms: float
+    is_final: bool
 
 
 @dataclass(frozen=True)
@@ -31,6 +43,7 @@ class SessionResult:
     speech_detected: bool
     sample_rate: int
     total_samples: int
+    session_id: str = ""
     peak_dbfs: float = -100.0
     rms_dbfs: float = -100.0
     input_device: str = "Unknown"
