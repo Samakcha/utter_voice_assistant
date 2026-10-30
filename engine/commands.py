@@ -52,8 +52,10 @@ _POLITENESS_PREFIX = (
 # We permit: open, open up, launch, bring up.
 _VERB = r"(?:open(?:\s+up)?|launch|bring\s+up)"
 
-# Determiner and target (including known Whisper acoustic mishearing 'nodes' for 'notes')
-_TARGET = r"(?:the\s+|my\s+)?(?:notes|nodes)(?:\s+(?:app|application))?"
+# Determiner and target: accepts singular ('note', 'node') and plural ('notes', 'nodes').
+# 'node' / 'nodes' are included to handle known Whisper acoustic mishearings.
+# 'the' and 'my' are accepted determiners; 'a' and 'an' are excluded so 'open a note' is rejected.
+_TARGET = r"(?:the\s+|my\s+)?(?:notes?|nodes?)(?:\s+(?:app|application))?"
 
 # Trailing politeness wrapper
 _POLITENESS_SUFFIX = r"(?:\s+(?:please|for\s+me|thanks|thank\s+you))?"
