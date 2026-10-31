@@ -14,6 +14,7 @@ from engine.config import (
     DictationConfig,
     HotkeysConfig,
     NormalizationConfig,
+    NotesConfig,
     StorageConfig,
     TimeoutsConfig,
     VADConfig,
@@ -100,6 +101,14 @@ def create_test_config(temp_dir: Path) -> AppConfig:
             clipboard_restore_delay_ms=50,
             modifier_release_timeout_ms=50,
             trailing_space=False,
+        ),
+        notes=NotesConfig(
+            stop_phrases=["stop note", "stop dictation", "end dictation"],
+            silence_sec=0.3,
+            title_template="Voice note {date} {time}",
+            folder="",
+            reveal_after_save=False,
+            ready_sound=False,
         ),
     )
 

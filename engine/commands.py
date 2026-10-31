@@ -65,6 +65,23 @@ _OPEN_NOTES_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Regex components for the "take note" command
+# Verbs: start/begin taking, take, start/begin creating, create, start/begin making, make, (a) new
+_TAKE_NOTE_VERB = (
+    r"(?:"
+    r"(?:(?:start|begin)\s+taking|take|"
+    r"(?:start|begin)\s+creating|create|"
+    r"(?:start|begin)\s+making|make)\s+(?:(?:a\s+)?new\s+|a\s+|some\s+)?|"
+    r"(?:a\s+)?new\s+"
+    r")"
+)
+_TAKE_NOTE_TARGET = r"(?:notes?|nodes?)"
+
+_TAKE_NOTE_PATTERN = re.compile(
+    rf"^{_POLITENESS_PREFIX}{_TAKE_NOTE_VERB}{_TAKE_NOTE_TARGET}{_POLITENESS_SUFFIX}$",
+    re.IGNORECASE,
+)
+
 
 def match_command(text: str) -> Optional[CommandMatch]:
     """
@@ -85,6 +102,13 @@ def match_command(text: str) -> Optional[CommandMatch]:
             action_id="open_notes",
             normalized_text=normalized,
             matched_variant="open_notes",
+        )
+
+    if _TAKE_NOTE_PATTERN.match(normalized):
+        return CommandMatch(
+            action_id="take_note",
+            normalized_text=normalized,
+            matched_variant="take_note",
         )
 
     return None

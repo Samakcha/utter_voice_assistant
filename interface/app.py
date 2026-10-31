@@ -16,6 +16,13 @@ from engine.commands import CommandMatch, match_command
 from engine.config import AppConfig
 from engine.insertion import format_dictation_insertion
 from engine.models import DictationChunk, EndReason, SessionMode, SessionResult, TranscriptionResult
+from engine.notes_writer import (
+    AppleScriptNotesWriter,
+    BaseNotesWriter,
+    format_note_html,
+    generate_note_title,
+    save_note_failure_backup,
+)
 from engine.session import SessionManager
 from engine.stop_phrases import detect_stop_phrase, validate_stop_phrases
 from engine.transcriber import BaseTranscriber
@@ -46,6 +53,7 @@ class VoiceAssistantApp(rumps.App):
     TITLE_IDLE = "🎙️ Voice Assistant"
     TITLE_COMMAND = "🔴 Listening (Command)..."
     TITLE_DICTATION = "🔵 Listening (Dictation)..."
+    TITLE_NOTE = "📝 Taking a note..."
     TITLE_TRANSCRIBING = "⏳ Transcribing..."
     TITLE_STOPPED = "⚪ [Stopped]"
 
@@ -54,6 +62,7 @@ class VoiceAssistantApp(rumps.App):
         config: AppConfig,
         session_manager: SessionManager,
         transcriber: Optional[BaseTranscriber] = None,
+        notes_writer: Optional[BaseNotesWriter] = None,
     ):
         initial_title = self.TITLE_LOADING if transcriber is not None else self.TITLE_IDLE
         super().__init__(name="Voice Assistant", title=initial_title, quit_button=None)
@@ -61,6 +70,7 @@ class VoiceAssistantApp(rumps.App):
         self.config = config
         self.session_manager = session_manager
         self.transcriber = transcriber
+        self.notes_writer = notes_writer if notes_writer is not None else AppleScriptNotesWriter()
         self.is_running = True
         self.model_ready = False if transcriber is not None else True
         self.overlay: Optional[VoiceAssistantOverlay] = None
@@ -71,6 +81,7 @@ class VoiceAssistantApp(rumps.App):
 
         # Validate configured stop phrases at startup
         validate_stop_phrases(config.dictation.stop_phrases)
+        validate_stop_phrases(config.notes.stop_phrases)
 
         # Dictation session state tracking
         self._dictation_session_id: Optional[str] = None
@@ -80,6 +91,16 @@ class VoiceAssistantApp(rumps.App):
         self._dictation_session_result: Optional[SessionResult] = None
         self._dictation_session_ended: bool = False
         self._dictation_lock = threading.Lock()
+
+        # Note session state tracking
+        self._note_session_id: Optional[str] = None
+        self._note_chunks: Dict[int, str] = {}
+        self._note_latencies: Dict[int, float] = {}
+        self._note_pending_chunks: int = 0
+        self._note_session_result: Optional[SessionResult] = None
+        self._note_session_ended: bool = False
+        self._note_lock = threading.Lock()
+        self._cancel_pending_note_start: bool = False
 
         # Connect session lifecycle callbacks
         self.session_manager.on_session_start = self._on_session_start
@@ -160,21 +181,33 @@ class VoiceAssistantApp(rumps.App):
         """Handle command mode hotkey trigger."""
         if not self.is_running:
             return
+        if self.session_manager.is_listening and self.session_manager.current_mode == SessionMode.NOTE:
+            self.session_manager.stop_session(EndReason.HOTKEY)
+            return
         self.session_manager.start_session(SessionMode.COMMAND)
 
     def _on_dictation_hotkey(self) -> None:
         """Handle dictation mode hotkey trigger."""
         if not self.is_running:
             return
+        if self.session_manager.is_listening and self.session_manager.current_mode == SessionMode.NOTE:
+            self.session_manager.stop_session(EndReason.HOTKEY)
+            return
         self.session_manager.start_session(SessionMode.DICTATION)
 
     def _on_cancel_hotkey(self) -> None:
         """Handle Esc cancellation."""
+        self._cancel_pending_note_start = True
         with self._dictation_lock:
             self._dictation_session_id = None
             self._dictation_chunks.clear()
             self._dictation_pending_chunks = 0
             self._dictation_session_ended = False
+        with self._note_lock:
+            self._note_session_id = None
+            self._note_chunks.clear()
+            self._note_pending_chunks = 0
+            self._note_session_ended = False
         if self.overlay is not None:
             self.overlay.hide()
         self.session_manager.cancel_session(EndReason.ESC)
@@ -190,21 +223,74 @@ class VoiceAssistantApp(rumps.App):
                 self._dictation_session_result = None
                 self._dictation_session_ended = False
 
-        if self.overlay is not None:
-            self.overlay.show_listening(mode.value)
+            if self.overlay is not None:
+                self.overlay.show_listening(mode.value)
 
-        def _update_ui():
-            if mode == SessionMode.COMMAND:
-                self.title = self.TITLE_COMMAND
-                self.status_item.title = "Status: Listening for command..."
-            else:
+            def _update_dictation_ui():
                 self.title = self.TITLE_DICTATION
                 self.status_item.title = "Status: Listening for dictation..."
 
-        run_on_main_thread(_update_ui)
+            run_on_main_thread(_update_dictation_ui)
+
+        elif mode == SessionMode.NOTE:
+            with self._note_lock:
+                self._note_session_id = self.session_manager.current_session_id
+                self._note_chunks.clear()
+                self._note_latencies.clear()
+                self._note_pending_chunks = 0
+                self._note_session_result = None
+                self._note_session_ended = False
+
+            # Show overlay only after audio stream is confirmed open
+            if self.overlay is not None:
+                self.overlay.show_note_listening()
+
+            if self.config.notes.ready_sound:
+                try:
+                    snd = AppKit.NSSound.soundNamed_("Tink")
+                    if snd is not None:
+                        snd.play()
+                except Exception as e:
+                    logger.debug("Could not play ready sound: %s", e)
+
+            def _update_note_ui():
+                self.title = self.TITLE_NOTE
+                self.status_item.title = "Status: Taking a note..."
+
+            run_on_main_thread(_update_note_ui)
+
+        else:
+            if self.overlay is not None:
+                self.overlay.show_listening(mode.value)
+
+            def _update_command_ui():
+                self.title = self.TITLE_COMMAND
+                self.status_item.title = "Status: Listening for command..."
+
+            run_on_main_thread(_update_command_ui)
 
     def _on_dictation_chunk(self, chunk: DictationChunk) -> None:
-        """Callback from engine when a dictation speech chunk is ready for transcription."""
+        """Callback from engine when a dictation or note speech chunk is ready for transcription."""
+        is_dictation = False
+        is_note = False
+        with self._dictation_lock:
+            if chunk.session_id == self._dictation_session_id and self._dictation_session_id is not None:
+                is_dictation = True
+        with self._note_lock:
+            if chunk.session_id == self._note_session_id and self._note_session_id is not None:
+                is_note = True
+
+        if not is_dictation and not is_note:
+            logger.debug("Dropping chunk %d for inactive/stale session %s", chunk.chunk_index, chunk.session_id)
+            return
+
+        if is_dictation:
+            self._dispatch_dictation_chunk(chunk)
+        else:
+            self._dispatch_note_chunk(chunk)
+
+    def _dispatch_dictation_chunk(self, chunk: DictationChunk) -> None:
+        """Dispatch a speech chunk for dictation transcription."""
         with self._dictation_lock:
             if chunk.session_id != self._dictation_session_id or self._dictation_session_id is None:
                 logger.debug("Dropping chunk %d for inactive/stale dictation session", chunk.chunk_index)
@@ -237,6 +323,54 @@ class VoiceAssistantApp(rumps.App):
         def _on_err(err: Exception):
             logger.error("Error transcribing dictation chunk %d: %s", chunk_idx, err)
             self._handle_dictation_chunk_result(
+                session_id,
+                chunk_idx,
+                TranscriptionResult(text="", language="en", audio_duration_sec=0.0, processing_time_sec=0.0),
+                is_final,
+            )
+
+        self.transcriber.transcribe_async(
+            audio=chunk.audio,
+            callback=_on_success,
+            on_error=_on_err,
+            prompt=prompt,
+            normalize=self.config.normalization.enabled,
+        )
+
+    def _dispatch_note_chunk(self, chunk: DictationChunk) -> None:
+        """Dispatch a speech chunk for note transcription."""
+        with self._note_lock:
+            if chunk.session_id != self._note_session_id or self._note_session_id is None:
+                logger.debug("Dropping chunk %d for inactive/stale note session", chunk.chunk_index)
+                return
+            self._note_pending_chunks += 1
+            session_id = chunk.session_id
+            chunk_idx = chunk.chunk_index
+            is_final = chunk.is_final
+
+            # Context prompt from previous chunk
+            prompt = None
+            if self.config.dictation.context_prompt and chunk_idx > 0:
+                completed = [self._note_chunks[i] for i in sorted(self._note_chunks.keys()) if i < chunk_idx]
+                if completed:
+                    prompt = completed[-1]
+
+        if self.transcriber is None:
+            logger.warning("No transcriber available for note chunk %d", chunk_idx)
+            self._handle_note_chunk_result(
+                session_id,
+                chunk_idx,
+                TranscriptionResult(text="", language="en", audio_duration_sec=0.0, processing_time_sec=0.0),
+                is_final,
+            )
+            return
+
+        def _on_success(tx_res: TranscriptionResult):
+            self._handle_note_chunk_result(session_id, chunk_idx, tx_res, is_final)
+
+        def _on_err(err: Exception):
+            logger.error("Error transcribing note chunk %d: %s", chunk_idx, err)
+            self._handle_note_chunk_result(
                 session_id,
                 chunk_idx,
                 TranscriptionResult(text="", language="en", audio_duration_sec=0.0, processing_time_sec=0.0),
@@ -291,6 +425,46 @@ class VoiceAssistantApp(rumps.App):
         if should_finalize:
             self._finalize_dictation_insertion(session_id)
 
+    def _handle_note_chunk_result(
+        self,
+        session_id: str,
+        chunk_index: int,
+        tx_result: TranscriptionResult,
+        is_final: bool,
+    ) -> None:
+        """Process completed transcription of a note chunk."""
+        should_finalize = False
+        stop_phrase_detected = False
+        with self._note_lock:
+            if session_id != self._note_session_id or self._note_session_id is None:
+                logger.debug("Dropping chunk result for stale note session %s", session_id)
+                return
+
+            self._note_pending_chunks = max(0, self._note_pending_chunks - 1)
+            self._note_chunks[chunk_index] = tx_result.text
+            self._note_latencies[chunk_index] = tx_result.processing_time_sec
+
+            # Check if accumulated text ends with a configured note stop phrase
+            ordered_texts = [self._note_chunks[i] for i in sorted(self._note_chunks.keys())]
+            joined_so_far = join_transcription_chunks(ordered_texts)
+            match = detect_stop_phrase(
+                joined_so_far,
+                self.config.notes.stop_phrases,
+                self.config.dictation.fuzzy_tolerance,
+            )
+            if match is not None and not self._note_session_ended:
+                stop_phrase_detected = True
+
+            if self._note_session_ended and self._note_pending_chunks == 0:
+                should_finalize = True
+
+        if stop_phrase_detected:
+            logger.info("Stop phrase '%s' detected during note recording; stopping session.", match.matched_phrase)
+            self.session_manager.stop_session(EndReason.STOP_PHRASE)
+
+        if should_finalize:
+            self._finalize_note_save(session_id)
+
     def _on_session_end(self, result: SessionResult) -> None:
         """Callback from engine when listening session ends."""
         # 1. If canceled by Esc:
@@ -300,10 +474,15 @@ class VoiceAssistantApp(rumps.App):
                     self._dictation_session_id = None
                     self._dictation_chunks.clear()
                     self._dictation_pending_chunks = 0
+            elif result.mode == SessionMode.NOTE:
+                with self._note_lock:
+                    self._note_session_id = None
+                    self._note_chunks.clear()
+                    self._note_pending_chunks = 0
             if self.overlay is not None:
                 self.overlay.hide()
             self._restore_idle_ui()
-            logger.info("Session canceled by Esc; skipping transcription/insertion.")
+            logger.info("Session canceled by Esc; skipping transcription/action.")
             return
 
         # 2. DICTATION MODE
@@ -315,7 +494,7 @@ class VoiceAssistantApp(rumps.App):
                 logger.info("Dictation ended with no speech; pasting nothing.")
                 return
 
-            # Change 5: Show "Transcribing..." in overlay until all chunks finish and paste happens
+            # Show "Transcribing..." in overlay until all chunks finish and paste happens
             if self.overlay is not None:
                 self.overlay.show_transcribing()
 
@@ -336,7 +515,36 @@ class VoiceAssistantApp(rumps.App):
                 self._finalize_dictation_insertion(result.session_id)
             return
 
-        # 3. COMMAND MODE: verify speech was detected and WAV exists
+        # 3. NOTE MODE
+        if result.mode == SessionMode.NOTE:
+            if not result.speech_detected and not self._note_chunks:
+                if self.overlay is not None:
+                    self.overlay.show_note_empty()
+                self._restore_idle_ui()
+                logger.info("Note session ended with no speech; creating nothing.")
+                return
+
+            if self.overlay is not None:
+                self.overlay.show_transcribing()
+
+            def _set_transcribing_note_ui():
+                self.title = self.TITLE_TRANSCRIBING
+                self.status_item.title = "Status: Transcribing final note..."
+
+            run_on_main_thread(_set_transcribing_note_ui)
+
+            should_finalize = False
+            with self._note_lock:
+                self._note_session_result = result
+                self._note_session_ended = True
+                if self._note_pending_chunks == 0:
+                    should_finalize = True
+
+            if should_finalize:
+                self._finalize_note_save(result.session_id)
+            return
+
+        # 4. COMMAND MODE: verify speech was detected and WAV exists
         if not result.speech_detected or not result.audio_path or not result.audio_path.exists():
             if self.overlay is not None:
                 self.overlay.hide()
@@ -454,12 +662,142 @@ class VoiceAssistantApp(rumps.App):
             )
         )
 
+    def _finalize_note_save(self, session_id: str) -> None:
+        """Join note chunks, strip stop phrase, format HTML, and write to macOS Notes."""
+        with self._note_lock:
+            if session_id != self._note_session_id:
+                return
+            chunks_list = [self._note_chunks[i] for i in sorted(self._note_chunks.keys())]
+            latencies = [self._note_latencies.get(i, 0.0) for i in sorted(self._note_chunks.keys())]
+            session_result = self._note_session_result
+            self._note_session_id = None
+
+        raw_joined = join_transcription_chunks(chunks_list)
+
+        match = detect_stop_phrase(
+            raw_joined,
+            self.config.notes.stop_phrases,
+            self.config.dictation.fuzzy_tolerance,
+        )
+        if match is not None:
+            final_text = match.cleaned_text
+            matched_phrase_str = f'"{match.matched_phrase}"'
+            end_reason_str = EndReason.STOP_PHRASE.value
+        else:
+            final_text = raw_joined
+            matched_phrase_str = "None"
+            end_reason_str = session_result.end_reason.value if session_result else "unknown"
+
+        if not final_text.strip():
+            self._restore_idle_ui()
+            if self.overlay is not None:
+                self.overlay.show_note_empty()
+            logger.info("[Note Complete] Empty note text; nothing to create.")
+            return
+
+        word_count = len(final_text.split())
+        if self.overlay is not None:
+            self.overlay.show_saving_note()
+
+        def _set_saving_ui():
+            self.title = self.TITLE_TRANSCRIBING
+            self.status_item.title = "Status: Saving note to Notes app..."
+
+        run_on_main_thread(_set_saving_ui)
+
+        def _save_worker():
+            title = generate_note_title(self.config.notes.title_template)
+            body_html = format_note_html(title, final_text)
+
+            result = self.notes_writer.create_note(
+                title=title,
+                body_html=body_html,
+                folder=self.config.notes.folder,
+                reveal=self.config.notes.reveal_after_save,
+            )
+
+            lat_str = ", ".join(f"{l:.3f}s" for l in latencies) if latencies else "0.0s"
+
+            if result.success:
+                def _on_success():
+                    self._restore_idle_ui()
+                    if self.overlay is not None:
+                        self.overlay.show_note_saved(word_count)
+
+                run_on_main_thread(_on_success)
+                logger.info(
+                    "[Note Saved] Title: \"%s\" | Words: %d | Chunks: %d [%s] | End Reason: %s (%s)",
+                    title,
+                    word_count,
+                    len(chunks_list),
+                    lat_str,
+                    end_reason_str,
+                    matched_phrase_str,
+                )
+                print(
+                    f"\n"
+                    f"┌─────────────────────────────────────────────────────────\n"
+                    f"│ [Note Saved] \"{title}\"\n"
+                    f"│ Words:       {word_count}\n"
+                    f"│ Chunks:      {len(chunks_list)} (Transcribe times: [{lat_str}])\n"
+                    f"│ End Reason:  {end_reason_str} ({matched_phrase_str})\n"
+                    f"│ Status:      {result.message}\n"
+                    f"└─────────────────────────────────────────────────────────\n",
+                    flush=True,
+                )
+            else:
+                # Save failure backup to note_backups/
+                backup_path = save_note_failure_backup(
+                    text=final_text,
+                    title=title,
+                    error_msg=result.error or result.message,
+                    backup_dir=Path("note_backups"),
+                )
+
+                # Copy text to clipboard as normal text (no transient flag)
+                try:
+                    pb = AppKit.NSPasteboard.generalPasteboard()
+                    pb.clearContents()
+                    pb.setString_forType_(final_text, AppKit.NSPasteboardTypeString)
+                except Exception as e:
+                    logger.error("Failed to copy failed note to pasteboard: %s", e)
+
+                def _notify_ui():
+                    self._restore_idle_ui()
+                    if self.overlay is not None:
+                        self.overlay.show_note_failed_copied(result.error or result.message)
+
+                run_on_main_thread(_notify_ui)
+                logger.error(
+                    "[Note Save FAILED] %s | Text backed up to %s and copied to clipboard.",
+                    result.error or result.message,
+                    backup_path,
+                )
+                print(
+                    f"\n"
+                    f"┌─────────────────────────────────────────────────────────\n"
+                    f"│ [Note Save FAILED] {result.error or result.message}\n"
+                    f"│ Text copied to clipboard and backed up to: {backup_path}\n"
+                    f"└─────────────────────────────────────────────────────────\n",
+                    flush=True,
+                )
+
+        threading.Thread(target=_save_worker, name="note-save-worker", daemon=True).start()
+
     def _on_transcription_success(
         self,
         tx_result: TranscriptionResult,
         session_result: SessionResult,
     ) -> None:
         """Invoked when command mode transcription completes on worker thread."""
+        if self._cancel_pending_note_start:
+            self._cancel_pending_note_start = False
+            self._restore_idle_ui()
+            if self.overlay is not None:
+                self.overlay.hide()
+            logger.info("Command transcription completed, but Esc was pressed; ignoring.")
+            return
+
         self._restore_idle_ui()
 
         # Handle Command Mode: Evaluate rule layer
@@ -523,7 +861,30 @@ class VoiceAssistantApp(rumps.App):
                 logger.debug("Could not display notification: %s", e)
             return
 
-        # Case B: Command matched (e.g. "open_notes")
+        # Case B: take_note command matched
+        if match.action_id == "take_note":
+            logger.info(
+                "[Command Matched: take_note] \"%s\" | Silence: %.2fs | Tx: %.3fs | Rule: %.4fs",
+                tx_result.text,
+                silence_wait_sec,
+                tx_result.processing_time_sec,
+                rule_match_time_sec,
+            )
+
+            def _start_note():
+                if self._cancel_pending_note_start:
+                    self._cancel_pending_note_start = False
+                    self._restore_idle_ui()
+                    if self.overlay is not None:
+                        self.overlay.hide()
+                    logger.info("take_note canceled by pending Esc before note start.")
+                    return
+                self.session_manager.start_session(SessionMode.NOTE)
+
+            run_on_main_thread(_start_note)
+            return
+
+        # Case C: open_notes (or other command) matched
         if self.overlay is not None:
             self.overlay.show_action_start(tx_result.text, "Opening Notes...")
 

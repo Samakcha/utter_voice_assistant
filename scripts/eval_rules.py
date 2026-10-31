@@ -15,7 +15,10 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
 if venv_python.is_file() and sys.executable != str(venv_python):
-    os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+    try:
+        os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+    except Exception:
+        pass
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -40,8 +43,8 @@ def evaluate_rules(csv_path: Path) -> int:
                 continue
             phrase = row[0].strip()
             expected = row[1].strip().lower() if len(row) > 1 else "none"
-            if expected not in ("open_notes", "none"):
-                expected = "none" if expected in ("", "0", "false") else "open_notes"
+            if expected not in ("open_notes", "take_note", "none"):
+                expected = "none" if expected in ("", "0", "false") else expected
             rows.append((phrase, expected))
 
     if not rows:
@@ -62,10 +65,12 @@ def evaluate_rules(csv_path: Path) -> int:
         if is_correct:
             correct += 1
         else:
-            if predicted == "open_notes" and expected == "none":
+            if predicted != "none" and expected == "none":
                 false_positives.append((phrase, predicted, expected))
-            elif predicted == "none" and expected == "open_notes":
+            elif predicted == "none" and expected != "none":
                 false_negatives.append((phrase, predicted, expected))
+            else:
+                false_positives.append((phrase, predicted, expected))
 
         results.append({
             "phrase": phrase,
@@ -94,7 +99,7 @@ def evaluate_rules(csv_path: Path) -> int:
     print(f"Total Phrases:    {total}")
     print(f"Correct:          {correct}/{total}")
     print(f"Accuracy:         {accuracy:.2f}%")
-    print(f"False Positives:  {len(false_positives)} (non-command triggered open_notes)")
+    print(f"False Positives:  {len(false_positives)} (triggered unexpected action)")
     print(f"False Negatives:  {len(false_negatives)} (valid command missed)")
     print("=" * 60)
 

@@ -93,3 +93,22 @@ modifier_release_timeout_ms = 500
 
 # Whether to append a trailing space after the inserted text
 trailing_space = false
+
+[notes]
+# Stop phrases that automatically end a voice note session and trigger saving
+stop_phrases = ["stop note", "stop dictation", "end dictation"]
+
+# Duration of silence (in seconds) required to auto-stop a voice note session
+silence_sec = 10.0
+
+# Title template for newly created notes ({date} and {time} placeholders)
+title_template = "Voice note {date} {time}"
+
+# Notes folder name to save notes into (empty string saves to default folder)
+folder = ""
+
+# Whether to bring Notes to the front after saving (false leaves user focus undisturbed)
+reveal_after_save = false
+
+# Whether to play a short ready sound when the note recording stream is confirmed open
+ready_sound = true

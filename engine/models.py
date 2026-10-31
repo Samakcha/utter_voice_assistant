@@ -11,6 +11,7 @@ class SessionMode(str, Enum):
     """Voice session mode."""
     COMMAND = "command"
     DICTATION = "dictation"
+    NOTE = "note"
 
 
 class EndReason(str, Enum):

@@ -67,6 +67,16 @@ class DictationConfig:
 
 
 @dataclass(frozen=True)
+class NotesConfig:
+    stop_phrases: List[str]
+    silence_sec: float
+    title_template: str
+    folder: str
+    reveal_after_save: bool
+    ready_sound: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
     timeouts: TimeoutsConfig
@@ -76,6 +86,7 @@ class AppConfig:
     whisper: WhisperConfig
     normalization: NormalizationConfig
     dictation: DictationConfig
+    notes: NotesConfig
 
 
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
@@ -120,6 +131,16 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         trailing_space=bool(dict_data.get("trailing_space", False)),
     )
 
+    notes_data = data.get("notes", {})
+    notes = NotesConfig(
+        stop_phrases=[str(p) for p in notes_data.get("stop_phrases", ["stop note", "stop dictation", "end dictation"])],
+        silence_sec=float(notes_data.get("silence_sec", 10.0)),
+        title_template=str(notes_data.get("title_template", "Voice note {date} {time}")),
+        folder=str(notes_data.get("folder", "")),
+        reveal_after_save=bool(notes_data.get("reveal_after_save", False)),
+        ready_sound=bool(notes_data.get("ready_sound", True)),
+    )
+
     return AppConfig(
         hotkeys=HotkeysConfig(
             command_mode=data["hotkeys"]["command_mode"],
@@ -152,4 +173,5 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ),
         normalization=normalization,
         dictation=dictation,
+        notes=notes,
     )

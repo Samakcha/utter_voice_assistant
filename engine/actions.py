@@ -97,13 +97,29 @@ def _open_notes_handler(timeout_sec: float = 5.0) -> ActionResult:
         )
 
 
-# Fixed registry of supported actions in v1
+def _take_note_handler(timeout_sec: float = 5.0) -> ActionResult:
+    """Action definition handler for initiating voice note-taking session."""
+    return ActionResult(
+        success=True,
+        action_id="take_note",
+        message="Taking a note...",
+        execution_time_sec=0.0,
+    )
+
+
+# Fixed registry of supported actions
 ACTION_REGISTRY: Dict[str, ActionDefinition] = {
     "open_notes": ActionDefinition(
         id="open_notes",
         label="Open Notes",
         risk=ActionRisk.LOW,
         handler=_open_notes_handler,
+    ),
+    "take_note": ActionDefinition(
+        id="take_note",
+        label="Take Note",
+        risk=ActionRisk.LOW,
+        handler=_take_note_handler,
     ),
 }
 

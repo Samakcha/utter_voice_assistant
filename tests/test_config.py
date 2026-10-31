@@ -50,3 +50,11 @@ def test_config_loading():
     assert config.dictation.clipboard_restore_delay_ms == 400
     assert config.dictation.modifier_release_timeout_ms == 500
     assert config.dictation.trailing_space is False
+
+    # Notes
+    assert config.notes.stop_phrases == ["stop note", "stop dictation", "end dictation"]
+    assert config.notes.silence_sec == 10.0
+    assert config.notes.title_template == "Voice note {date} {time}"
+    assert config.notes.folder == ""
+    assert config.notes.reveal_after_save is False
+    assert config.notes.ready_sound is True
