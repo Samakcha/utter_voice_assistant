@@ -231,6 +231,27 @@ class VoiceAssistantOverlay:
         """Display dictation empty feedback: 'Nothing to insert'; auto-fades after ~2.0s."""
         self._show_content("Nothing to insert", auto_dismiss_sec=2.0)
 
+    def show_note_listening(self) -> None:
+        """Display note recording state."""
+        self._show_content("📝 Taking a note... say 'stop note' to save", auto_dismiss_sec=None)
+
+    def show_saving_note(self) -> None:
+        """Display saving note state."""
+        self._show_content("💾 Saving note...", auto_dismiss_sec=None)
+
+    def show_note_saved(self, word_count: int) -> None:
+        """Display note saved state: 'Saved note (N words)'; auto-fades after ~2.0s."""
+        noun = "word" if word_count == 1 else "words"
+        self._show_content(f"✅ Saved note ({word_count} {noun})", auto_dismiss_sec=2.0)
+
+    def show_note_empty(self) -> None:
+        """Display empty note feedback: 'Nothing to save'; auto-fades after ~2.0s."""
+        self._show_content("Nothing to save", auto_dismiss_sec=2.0)
+
+    def show_note_failed_copied(self, reason: str) -> None:
+        """Display failure message: 'Couldn't save note: <reason>. Text copied to clipboard.'; auto-fades after 3.5s."""
+        self._show_content(f"⚠️ Couldn't save note: {reason}. Text copied to clipboard.", auto_dismiss_sec=3.5)
+
     def hide(self) -> None:
         """Hide overlay immediately (e.g. on Esc cancellation)."""
         self._cancel_dismiss_timer()

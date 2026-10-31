@@ -4,6 +4,9 @@
 # Audio session recordings (temporary WAV files)
 recordings/
 
+# Voice note failure backups (never pruned)
+note_backups/
+
 # Local Whisper model weights
 models/
 

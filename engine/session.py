@@ -106,6 +106,10 @@ class SessionManager:
                     logger.info("Dictation hotkey pressed again; ending session.")
                     self.stop_session(EndReason.HOTKEY)
                     return True
+                if self._current_mode == SessionMode.NOTE and mode in (SessionMode.COMMAND, SessionMode.DICTATION):
+                    logger.info("Hotkey pressed during note session; ending note session.")
+                    self.stop_session(EndReason.HOTKEY)
+                    return True
                 logger.info("Session already active in mode %s; ignoring start request for %s.", self._current_mode, mode)
                 return False
 
@@ -171,8 +175,8 @@ class SessionManager:
             speech_detected = self._speech_detected
             start_time = self._session_start_time
 
-            # Final chunk extraction for dictation if un-emitted speech exists
-            if mode == SessionMode.DICTATION and reason != EndReason.ESC:
+            # Final chunk extraction for dictation or note if un-emitted speech exists
+            if mode in (SessionMode.DICTATION, SessionMode.NOTE) and reason != EndReason.ESC:
                 if self._dictation_chunk_active and self._dictation_speech_frames_count > 0:
                     speech_ms = self._dictation_speech_frames_count * 32.0
                     if speech_ms >= self._config.dictation.min_speech_ms:
@@ -381,7 +385,7 @@ class SessionManager:
                                 trailing_silence_sec = silence_duration
                                 auto_stop_time = now
 
-            elif self._current_mode == SessionMode.DICTATION:
+            elif self._current_mode in (SessionMode.DICTATION, SessionMode.NOTE):
                 if is_speech:
                     if not self._dictation_chunk_active:
                         self._dictation_chunk_active = True
@@ -397,7 +401,7 @@ class SessionManager:
                         self._consecutive_speech_chunks += 1
                         if self._consecutive_speech_chunks >= self._config.vad.min_speech_chunks:
                             self._speech_detected = True
-                            logger.info("Dictation mode: speech onset detected (prob=%.3f).", prob)
+                            logger.info("%s mode: speech onset detected (prob=%.3f).", self._current_mode.value.capitalize(), prob)
                 else:
                     self._consecutive_speech_chunks = 0
                     if not self._dictation_chunk_active:
@@ -429,7 +433,8 @@ class SessionManager:
                                         self._dictation_chunk_index += 1
                                 else:
                                     logger.debug(
-                                        "Skipping dictation chunk with insufficient speech (%.1f ms < %d ms)",
+                                        "Skipping %s chunk with insufficient speech (%.1f ms < %d ms)",
+                                        self._current_mode.value,
                                         speech_ms,
                                         self._config.dictation.min_speech_ms,
                                     )
@@ -439,8 +444,13 @@ class SessionManager:
                                 self._dictation_trailing_silence_frames = 0
                                 self._dictation_pre_speech_ring_buffer.clear()
 
-                            if silence_duration >= self._config.timeouts.dictation_silence_sec:
-                                logger.info("Dictation mode: silence threshold of %.2fs reached; auto-stopping.", silence_duration)
+                            silence_limit = (
+                                self._config.notes.silence_sec
+                                if self._current_mode == SessionMode.NOTE
+                                else self._config.timeouts.dictation_silence_sec
+                            )
+                            if silence_duration >= silence_limit:
+                                logger.info("%s mode: silence threshold of %.2fs reached; auto-stopping.", self._current_mode.value.capitalize(), silence_duration)
                                 session_to_stop = EndReason.SILENCE
                                 trailing_silence_sec = silence_duration
                                 auto_stop_time = now
@@ -457,7 +467,7 @@ class SessionManager:
                 start_time = self._session_start_time
 
                 # Check if there is an un-emitted chunk when auto-stopping
-                if mode == SessionMode.DICTATION and session_to_stop != EndReason.ESC:
+                if mode in (SessionMode.DICTATION, SessionMode.NOTE) and session_to_stop != EndReason.ESC:
                     if self._dictation_chunk_active and self._dictation_speech_frames_count > 0:
                         speech_ms = self._dictation_speech_frames_count * 32.0
                         if speech_ms >= self._config.dictation.min_speech_ms:

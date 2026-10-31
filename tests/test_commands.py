@@ -80,7 +80,6 @@ NEGATIVE_PHRASES = [
     "open note folder",
     "open the note taking app",
     "I wrote a note yesterday",
-    "take a note",
     "open a note",
     "delete note",
     "stop notes",
@@ -99,9 +98,7 @@ NEGATIVE_PHRASES = [
     "show notes",
     "show the notes app",
     "start notes",
-    "start taking notes",
     # Other actions, operations or conversations
-    "take notes",
     "delete notes",
     "notes",
     "the notes",
@@ -109,8 +106,6 @@ NEGATIVE_PHRASES = [
     "my notes",
     "what are my notes",
     "read my notes",
-    "make a note",
-    "can you take notes",
     "close notes",
     "quit notes",
     "open safari",
@@ -121,11 +116,82 @@ NEGATIVE_PHRASES = [
     "I really like taking notes in Apple Notes",
     "is notes open",
     "notes is open",
+    # take_note negative phrases
+    "I took notes yesterday",
+    "take notes from the meeting",
+    "take a note of that",
+    "don't take notes",
+    "do not take notes",
+    "start taking notes on the lecture",
+    "create a note about Rahul",
+    "open notes and take a note",
+    "take a note of what he said",
+    "can you take notes from this call",
+    "take notes for the class tomorrow",
+    "I want to take a note",
+    "he will take notes",
+    "taking notes is fun",
+    "note taking",
+    "take note of this",
+    "create note for mom",
+    "new notes folder",
+    "make a note about dinner",
+    "start taking notes about biology",
+    "begin taking notes on project",
+    "please don't take notes",
+    "why do you take notes",
+    "take a note app",
+]
+
+TAKE_NOTE_POSITIVE_PHRASES = [
+    "start taking notes",
+    "start taking a note",
+    "take notes",
+    "take a note",
+    "take a new note",
+    "new note",
+    "create a note",
+    "create a new note",
+    "make a note",
+    "begin taking notes",
+    "begin taking a note",
+    "start creating a note",
+    "start creating notes",
+    "begin creating a note",
+    "start making a note",
+    "start making notes",
+    "begin making a note",
+    "make notes",
+    "create notes",
+    "take some notes",
+    # Politeness wrappers
+    "can you take a note",
+    "can you please take a note",
+    "could you take notes",
+    "could you please take a note",
+    "please take a note",
+    "please take notes",
+    "hey take a note",
+    "take a note for me",
+    "take notes for me",
+    "take a note please",
+    "can you take notes",
+    # Whisper mishearings
+    "take a node",
+    "take nodes",
+    "start taking nodes",
+    "create a node",
+    "new node",
+    # Capitalization & punctuation
+    "Start taking notes.",
+    "Take a note.",
+    "Can you take a note?",
+    "Please take a note!",
 ]
 
 
 @pytest.mark.parametrize("phrase", POSITIVE_PHRASES)
-def test_match_command_positive_cases(phrase: str):
+def test_match_command_open_notes_positive(phrase: str):
     """Verify that every valid phrasing maps cleanly to the 'open_notes' action."""
     match = match_command(phrase)
     assert match is not None, f"Failed to match valid positive phrase: '{phrase}'"
@@ -135,11 +201,49 @@ def test_match_command_positive_cases(phrase: str):
     assert len(match.normalized_text) > 0
 
 
+@pytest.mark.parametrize("phrase", TAKE_NOTE_POSITIVE_PHRASES)
+def test_match_command_take_note_positive(phrase: str):
+    """Verify that every valid note-taking phrasing maps cleanly to 'take_note'."""
+    match = match_command(phrase)
+    assert match is not None, f"Failed to match valid take_note phrase: '{phrase}'"
+    assert isinstance(match, CommandMatch)
+    assert match.action_id == "take_note"
+    assert match.matched_variant == "take_note"
+    assert len(match.normalized_text) > 0
+
+
 @pytest.mark.parametrize("phrase", NEGATIVE_PHRASES)
 def test_match_command_negative_cases(phrase: str):
     """Verify that conversational text, questions, or non-matching verbs return None."""
     match = match_command(phrase)
     assert match is None, f"Incorrectly matched negative phrase: '{phrase}' (got {match})"
+
+
+def test_eval_rules_csv_disjoint_and_accuracy():
+    """Empirical overlap and accuracy test across the entire eval_rules.csv."""
+    import csv
+    from pathlib import Path
+
+    csv_path = Path(__file__).resolve().parent / "data" / "eval_rules.csv"
+    assert csv_path.is_file(), f"eval_rules.csv missing at {csv_path}"
+
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        assert header is not None
+
+        for phrase, expected in reader:
+            phrase = phrase.strip()
+            expected = expected.strip().lower()
+            if not phrase:
+                continue
+
+            match = match_command(phrase)
+            predicted = match.action_id if match else "none"
+
+            assert predicted == expected, (
+                f"Mismatch for '{phrase}': expected '{expected}', got '{predicted}'"
+            )
 
 
 def test_normalize_command_text():

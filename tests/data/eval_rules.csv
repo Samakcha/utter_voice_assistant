@@ -59,7 +59,7 @@ open notes folder,none
 open note folder,none
 open the note taking app,none
 I wrote a note yesterday,none
-take a note,none
+take a note,take_note
 open a note,none
 delete note,none
 stop notes,none
@@ -74,16 +74,16 @@ open the notes folder,none
 show notes,none
 show the notes app,none
 start notes,none
-start taking notes,none
-take notes,none
+start taking notes,take_note
+take notes,take_note
 delete notes,none
 notes,none
 notes app,none
 my notes,none
 what are my notes,none
 read my notes,none
-make a note,none
-can you take notes,none
+make a note,take_note
+can you take notes,take_note
 close notes,none
 quit notes,none
 open safari,none
@@ -92,3 +92,62 @@ hello how are you,none
 send message to Rahul on WhatsApp,none
 please don't open notes,none
 is notes open,none
+start taking a note,take_note
+take a new note,take_note
+new note,take_note
+create a note,take_note
+create a new note,take_note
+begin taking notes,take_note
+begin taking a note,take_note
+start creating a note,take_note
+start creating notes,take_note
+begin creating a note,take_note
+start making a note,take_note
+start making notes,take_note
+begin making a note,take_note
+make notes,take_note
+create notes,take_note
+can you take a note,take_note
+can you please take a note,take_note
+could you take notes,take_note
+could you please take a note,take_note
+please take a note,take_note
+please take notes,take_note
+hey take a note,take_note
+take a note for me,take_note
+take notes for me,take_note
+take a note please,take_note
+take a node,take_note
+take nodes,take_note
+start taking nodes,take_note
+create a node,take_note
+new node,take_note
+take a note app,none
+take some notes,take_note
+Start taking notes.,take_note
+Take a note.,take_note
+Can you take a note?,take_note
+Please take a note!,take_note
+I took notes yesterday,none
+take notes from the meeting,none
+take a note of that,none
+don't take notes,none
+do not take notes,none
+start taking notes on the lecture,none
+create a note about Rahul,none
+open notes and take a note,none
+take a note of what he said,none
+can you take notes from this call,none
+take notes for the class tomorrow,none
+I want to take a note,none
+he will take notes,none
+taking notes is fun,none
+note taking,none
+take note of this,none
+create note for mom,none
+new notes folder,none
+make a note about dinner,none
+start taking notes about biology,none
+begin taking notes on project,none
+please don't take notes,none
+why do you take notes,none
