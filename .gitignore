@@ -15,5 +15,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Probe and experiment outputs
+*probe*.txt
+*probe*.json
+*experiment*.txt
+*experiment*.json
+
 # macOS system files
 .DS_Store
