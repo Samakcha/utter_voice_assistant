@@ -16,6 +16,7 @@ CRITICAL SAFETY & PRIVACY RULES:
    label, or selected text content attributes from any window content or chat.
 """
 
+from collections import Counter, deque
 from datetime import datetime
 import os
 from pathlib import Path
@@ -121,62 +122,170 @@ def post_whitelisted_key(keycode: int, modifiers: int = 0) -> None:
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
 
-def find_search_field(app_element: Any) -> Optional[Any]:
-    """Locate the search field element in the WhatsApp window tree."""
+def get_app_windows(app_element: Any) -> List[Any]:
+    """Retrieve candidate root windows, prioritizing main and focused windows."""
+    windows_list = []
+
+    err_m, main_win = ApplicationServices.AXUIElementCopyAttributeValue(
+        app_element, ApplicationServices.kAXMainWindowAttribute, None
+    )
+    if err_m == 0 and main_win:
+        windows_list.append(main_win)
+
+    err_f, foc_win = ApplicationServices.AXUIElementCopyAttributeValue(
+        app_element, ApplicationServices.kAXFocusedWindowAttribute, None
+    )
+    if err_f == 0 and foc_win:
+        if not any(foc_win == existing for existing in windows_list):
+            windows_list.append(foc_win)
+
     err, windows = ApplicationServices.AXUIElementCopyAttributeValue(
         app_element, ApplicationServices.kAXWindowsAttribute, None
     )
-    if err != 0 or not windows:
-        return None
+    if err == 0 and windows:
+        for w in windows:
+            if not any(w == existing for existing in windows_list):
+                windows_list.append(w)
 
-    target = None
+    if not windows_list:
+        err_c, children = ApplicationServices.AXUIElementCopyAttributeValue(
+            app_element, ApplicationServices.kAXChildrenAttribute, None
+        )
+        if err_c == 0 and children:
+            windows_list = list(children)
 
-    def _walk(el: Any, depth: int):
-        nonlocal target
-        if target is not None or depth > 10:
-            return
+    return windows_list
 
-        err, role = ApplicationServices.AXUIElementCopyAttributeValue(
+
+def inspect_windows_metadata(windows: List[Any]) -> List[Dict[str, Any]]:
+    """Gather structure-only metadata for each window (no content attributes)."""
+    metas = []
+    for idx, win in enumerate(windows, 1):
+        err_r, role = ApplicationServices.AXUIElementCopyAttributeValue(
+            win, ApplicationServices.kAXRoleAttribute, None
+        )
+        err_s, subrole = ApplicationServices.AXUIElementCopyAttributeValue(
+            win, ApplicationServices.kAXSubroleAttribute, None
+        )
+        err_m, is_main = ApplicationServices.AXUIElementCopyAttributeValue(
+            win, ApplicationServices.kAXMainAttribute, None
+        )
+        err_min, is_minimized = ApplicationServices.AXUIElementCopyAttributeValue(
+            win, ApplicationServices.kAXMinimizedAttribute, None
+        )
+
+        metas.append({
+            "index": idx,
+            "role": str(role) if (err_r == 0 and role) else "Unknown",
+            "subrole": str(subrole) if (err_s == 0 and subrole) else "None",
+            "is_main": bool(err_m == 0 and is_main),
+            "is_minimized": bool(err_min == 0 and is_minimized),
+        })
+    return metas
+
+
+def enable_catalyst_accessibility(app_element: Any) -> None:
+    """
+    Set AXManualAccessibility and AXEnhancedUserInterface on the app element.
+    Mac Catalyst UIKit views are lazily populated in the AX tree until an assistive client sets these.
+    """
+    try:
+        ApplicationServices.AXUIElementSetAttributeValue(
+            app_element, "AXManualAccessibility", True
+        )
+    except Exception:
+        pass
+    try:
+        ApplicationServices.AXUIElementSetAttributeValue(
+            app_element, "AXEnhancedUserInterface", True
+        )
+    except Exception:
+        pass
+
+
+def find_search_field_bfs(
+    app_element: Any, max_depth: int = 15
+) -> Tuple[Optional[Any], Dict[str, Any]]:
+    """
+    Breadth-first search (BFS) across all application windows for the search field.
+    Matches:
+      - subrole == 'AXSearchField' with role in ('AXStaticText', 'AXTextField', 'AXSearchField')
+      - or role == 'AXSearchField'
+    Collects structure-only diagnostics:
+      - max depth reached
+      - role histogram
+      - subrole histogram
+      - windows metadata
+    Never queries or stores content attributes.
+    """
+    windows = get_app_windows(app_element)
+    win_metas = inspect_windows_metadata(windows)
+
+    role_counts: Counter = Counter()
+    subrole_counts: Counter = Counter()
+    max_depth_reached = 1 if windows else 0
+    search_field = None
+
+    queue = deque()
+    for w in windows:
+        queue.append((w, 1))
+
+    while queue:
+        el, depth = queue.popleft()
+        if depth > max_depth_reached:
+            max_depth_reached = depth
+
+        err_r, role = ApplicationServices.AXUIElementCopyAttributeValue(
             el, ApplicationServices.kAXRoleAttribute, None
         )
-        err_sub, subrole = ApplicationServices.AXUIElementCopyAttributeValue(
+        err_s, subrole = ApplicationServices.AXUIElementCopyAttributeValue(
             el, ApplicationServices.kAXSubroleAttribute, None
         )
 
-        role_str = str(role) if err == 0 and role else ""
-        subrole_str = str(subrole) if err_sub == 0 and subrole else ""
+        role_str = str(role) if (err_r == 0 and role) else "Unknown"
+        subrole_str = str(subrole) if (err_s == 0 and subrole) else "None"
 
-        if "SearchField" in subrole_str or "SearchField" in role_str:
-            target = el
-            return
+        role_counts[role_str] += 1
+        subrole_counts[subrole_str] += 1
 
-        err_c, children = ApplicationServices.AXUIElementCopyAttributeValue(
-            el, ApplicationServices.kAXChildrenAttribute, None
-        )
-        if err_c == 0 and children:
-            for child in children:
-                _walk(child, depth + 1)
+        if search_field is None:
+            is_subrole_match = (
+                (subrole_str == "AXSearchField" or "SearchField" in subrole_str)
+                and role_str in ("AXStaticText", "AXTextField", "AXSearchField")
+            )
+            is_role_match = (role_str == "AXSearchField")
+            if is_subrole_match or is_role_match:
+                search_field = el
+                break
 
-    _walk(windows[0], 1)
-    return target
+        if depth < max_depth:
+            err_c, children = ApplicationServices.AXUIElementCopyAttributeValue(
+                el, ApplicationServices.kAXChildrenAttribute, None
+            )
+            if err_c == 0 and children:
+                for child in children:
+                    queue.append((child, depth + 1))
+
+    diag = {
+        "windows": win_metas,
+        "max_depth_reached": max_depth_reached,
+        "role_counts": role_counts,
+        "subrole_counts": subrole_counts,
+    }
+    return search_field, diag
 
 
-def find_chat_list_container(app_element: Any) -> Optional[Any]:
-    """Locate the scrollable chat list container element."""
-    err, windows = ApplicationServices.AXUIElementCopyAttributeValue(
-        app_element, ApplicationServices.kAXWindowsAttribute, None
-    )
-    if err != 0 or not windows:
-        return None
+def find_chat_list_container_bfs(app_element: Any, max_depth: int = 15) -> Optional[Any]:
+    """Locate the scrollable chat list container element using BFS across all windows."""
+    windows = get_app_windows(app_element)
+    queue = deque()
+    for w in windows:
+        queue.append((w, 1))
 
-    container = None
+    while queue:
+        el, depth = queue.popleft()
 
-    def _walk(el: Any, depth: int):
-        nonlocal container
-        if container is not None or depth > 10:
-            return
-
-        err, role = ApplicationServices.AXUIElementCopyAttributeValue(
+        err_r, role = ApplicationServices.AXUIElementCopyAttributeValue(
             el, ApplicationServices.kAXRoleAttribute, None
         )
         err_act, actions = ApplicationServices.AXUIElementCopyActionNames(el, None)
@@ -185,19 +294,66 @@ def find_chat_list_container(app_element: Any) -> Optional[Any]:
         err_c, children = ApplicationServices.AXUIElementCopyAttributeValue(
             el, ApplicationServices.kAXChildrenAttribute, None
         )
-        count = len(children) if (err_c == 0 and children) else 0
+        children_list = list(children) if (err_c == 0 and children) else []
+        count = len(children_list)
+
+        role_str = str(role) if (err_r == 0 and role) else ""
 
         # Catalyst chat list is a container with scroll actions and children
-        if (role in ("AXList", "AXTable", "AXOutline") or "AXScrollDownByPage" in actions_list) and count > 0:
-            container = el
-            return
+        if (role_str in ("AXList", "AXTable", "AXOutline") or "AXScrollDownByPage" in actions_list) and count > 0:
+            return el
 
-        if err_c == 0 and children:
-            for child in children:
-                _walk(child, depth + 1)
+        if depth < max_depth and children_list:
+            for child in children_list:
+                queue.append((child, depth + 1))
 
-    _walk(windows[0], 1)
-    return container
+    return None
+
+
+def format_diagnostic_report(
+    is_trusted: bool,
+    windows_info: List[Dict[str, Any]],
+    max_depth_reached: int,
+    role_counts: Counter,
+    subrole_counts: Counter,
+    catalyst_flags_attempted: bool,
+) -> str:
+    lines = [
+        "=" * 70,
+        "WHATSAPP ACCESSIBILITY STRUCTURE DIAGNOSTIC (SEARCH FIELD NOT FOUND)",
+        f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "=" * 70,
+        f"• Process Accessibility Trusted (AXIsProcessTrusted): {is_trusted}",
+        f"• Mac Catalyst Assistive Flags Set: {catalyst_flags_attempted}",
+        f"• Total Windows Detected: {len(windows_info)}",
+    ]
+    if windows_info:
+        lines.append("  Window Details:")
+        for w in windows_info:
+            lines.append(
+                f"    - Window #{w['index']}: Role={w['role']}, Subrole={w['subrole']}, Main={w['is_main']}, Minimized={w['is_minimized']}"
+            )
+    else:
+        lines.append("  No accessible windows returned by kAXWindowsAttribute or kAXChildrenAttribute.")
+
+    lines.append(f"• Tree Depth Reached: {max_depth_reached}")
+
+    lines.append("\n• Role Histogram (Count):")
+    if role_counts:
+        for r, c in role_counts.most_common():
+            lines.append(f"    {r}: {c}")
+    else:
+        lines.append("    (No elements traversed)")
+
+    lines.append("\n• Subrole Histogram (Count):")
+    if subrole_counts:
+        for sr, c in subrole_counts.most_common():
+            lines.append(f"    {sr}: {c}")
+    else:
+        lines.append("    (No subroles found)")
+
+    lines.append("=" * 70)
+    return "\n".join(lines)
 
 
 def audit_container_children(container: Any) -> Tuple[int, List[Any], List[Dict[str, Any]]]:
@@ -303,19 +459,88 @@ def main() -> int:
     print(f"• Found WhatsApp process (PID: {wa_app.processIdentifier()})")
     app_el = ApplicationServices.AXUIElementCreateApplication(wa_app.processIdentifier())
 
-    search_field = find_search_field(app_el)
-    container = find_chat_list_container(app_el)
+    is_trusted = bool(ApplicationServices.AXIsProcessTrusted())
+    print(f"• Accessibility Permission Trusted (AXIsProcessTrusted): {is_trusted}")
+    if not is_trusted:
+        print("  ⚠️ WARNING: AXIsProcessTrusted() is False. Terminal may require Accessibility permission in System Settings.")
+
+    print("• Scanning WhatsApp UI tree (BFS traversal across all windows, max depth 15)...")
+    search_field, diag = find_search_field_bfs(app_el, max_depth=15)
+    catalyst_needed = False
 
     if not search_field:
-        print("❌ Could not locate search field in WhatsApp window tree.")
+        print("• Search field not found on initial pass.")
+        print("• Setting Mac Catalyst assistive flags (AXManualAccessibility & AXEnhancedUserInterface)...")
+        enable_catalyst_accessibility(app_el)
+        print("• Waiting 1.0s for Mac Catalyst UIKit tree to instantiate...")
+        time.sleep(1.0)
+        search_field, diag = find_search_field_bfs(app_el, max_depth=15)
+        if search_field:
+            catalyst_needed = True
+            print("• SUCCESS: Search field located after enabling Mac Catalyst assistive flags!")
+
+    if not search_field:
+        print("\n❌ Could not locate search field in WhatsApp window tree (even after Mac Catalyst flags).")
+        diag_report = format_diagnostic_report(
+            is_trusted=is_trusted,
+            windows_info=diag["windows"],
+            max_depth_reached=diag["max_depth_reached"],
+            role_counts=diag["role_counts"],
+            subrole_counts=diag["subrole_counts"],
+            catalyst_flags_attempted=True,
+        )
+        print("\n" + diag_report + "\n")
+
+        summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
+        try:
+            summary_file.write_text(diag_report, encoding="utf-8")
+            print(f"Diagnostic report written to: {summary_file.name} (gitignored)")
+        except Exception as e:
+            print(f"Could not write summary file: {e}")
+
+        print("\n👉 Please copy and paste the diagnostic summary above into the chat.")
         return 1
+
+    container = find_chat_list_container_bfs(app_el, max_depth=15)
     if not container:
-        print("❌ Could not locate chat list container in WhatsApp window tree.")
+        if not catalyst_needed:
+            print("• Chat container not found on initial pass. Enabling Mac Catalyst assistive flags...")
+            enable_catalyst_accessibility(app_el)
+            time.sleep(1.0)
+            container = find_chat_list_container_bfs(app_el, max_depth=15)
+            if container:
+                catalyst_needed = True
+                print("• SUCCESS: Chat container located after enabling Mac Catalyst assistive flags!")
+
+    if not container:
+        print("\n❌ Could not locate chat list container in WhatsApp window tree.")
+        diag_report = format_diagnostic_report(
+            is_trusted=is_trusted,
+            windows_info=diag["windows"],
+            max_depth_reached=diag["max_depth_reached"],
+            role_counts=diag["role_counts"],
+            subrole_counts=diag["subrole_counts"],
+            catalyst_flags_attempted=True,
+        )
+        print("\n" + diag_report + "\n")
+
+        summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
+        try:
+            summary_file.write_text(diag_report, encoding="utf-8")
+            print(f"Diagnostic report written to: {summary_file.name} (gitignored)")
+        except Exception as e:
+            print(f"Could not write summary file: {e}")
+
+        print("\n👉 Please copy and paste the diagnostic summary above into the chat.")
         return 1
 
-    print("• Located Search Field and Chat List Container.")
+    print(f"• Located Search Field and Chat List Container. (Mac Catalyst flags needed: {'YES' if catalyst_needed else 'NO'})")
 
-    summary: Dict[str, Any] = {}
+    summary: Dict[str, Any] = {
+        "catalyst_flags_needed": catalyst_needed,
+        "windows_count": len(diag["windows"]),
+        "max_depth_reached": diag["max_depth_reached"],
+    }
 
     # Initial baseline container audit
     tot_base, rows_base, excl_base = audit_container_children(container)
@@ -564,6 +789,9 @@ def main() -> int:
         "WHATSAPP EXPERIMENT STRUCTURE-ONLY SUMMARY",
         f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "======================================================================",
+        f"Mac Catalyst Flags Needed:         {'YES' if summary.get('catalyst_flags_needed') else 'NO'}",
+        f"Windows Count:                     {summary.get('windows_count', 1)}",
+        f"Tree Depth Reached:                {summary.get('max_depth_reached', 0)}",
         f"Step A (AXPress Search Focus):    {'PASS' if summary['step_a']['search_field_focused'] else 'FAIL'} | Role: {summary['step_a']['focused_role']} | Subrole: {summary['step_a']['focused_subrole']}",
         f"Step B (Cmd+F Search Focus):      {'PASS' if summary['step_b']['search_field_focused'] else 'FAIL'} | Role: {summary['step_b']['focused_role']} | Subrole: {summary['step_b']['focused_subrole']}",
         f"Focus Guard Matches Subrole:      {'YES' if summary['step_a']['matches_guard'] or summary['step_b']['matches_guard'] else 'NO'}",
