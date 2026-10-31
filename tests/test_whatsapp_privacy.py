@@ -1,9 +1,11 @@
 """
 Privacy and Safety Audit Tests for WhatsApp Probe and Experiment Scripts.
-Verifies that scripts NEVER query content attributes (AXValue, AXDescription, AXHelp, AXLabel, etc.),
+Verifies that scripts NEVER query content attributes (values, descriptions, help, labels, text),
+allow ONLY structural attributes (role, subrole, children, position, size, enabled, focused, windows, action names),
 never post non-whitelisted keycodes (especially Return keycode 36), and output files are gitignored.
 """
 
+import ast
 from pathlib import Path
 import re
 import pytest
@@ -11,24 +13,79 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROBE_PATH = PROJECT_ROOT / "scripts" / "whatsapp_probe.py"
 EXPERIMENT_PATH = PROJECT_ROOT / "scripts" / "whatsapp_experiment.py"
+LAYOUT_PROBE_PATH = PROJECT_ROOT / "scripts" / "whatsapp_layout_probe.py"
 GITIGNORE_PATH = PROJECT_ROOT / ".gitignore"
 
 FORBIDDEN_CONTENT_ATTRIBUTES = [
-    "AXValue",
     "kAXValueAttribute",
-    "AXDescription",
     "kAXDescriptionAttribute",
-    "AXHelp",
+    "AXDescription",
     "kAXHelpAttribute",
-    "AXLabel",
+    "AXHelp",
     "kAXLabelAttribute",
-    "AXSelectedText",
+    "AXLabel",
     "kAXSelectedTextAttribute",
+    "AXSelectedText",
 ]
+
+ALLOWED_STRUCTURAL_ATTRIBUTE_NAMES = {
+    "kAXRoleAttribute",
+    "AXRole",
+    "kAXSubroleAttribute",
+    "AXSubrole",
+    "kAXChildrenAttribute",
+    "AXChildren",
+    "kAXPositionAttribute",
+    "AXPosition",
+    "kAXSizeAttribute",
+    "AXSize",
+    "kAXEnabledAttribute",
+    "AXEnabled",
+    "kAXFocusedAttribute",
+    "AXFocused",
+    "kAXFocusedUIElementAttribute",
+    "AXFocusedUIElement",
+    "kAXWindowsAttribute",
+    "AXWindows",
+    "kAXMainWindowAttribute",
+    "AXMainWindow",
+    "kAXFocusedWindowAttribute",
+    "AXFocusedWindow",
+    "kAXMainAttribute",
+    "AXMain",
+    "kAXMinimizedAttribute",
+    "AXMinimized",
+    # Mac Catalyst flags
+    "AXManualAccessibility",
+    "AXEnhancedUserInterface",
+    # Menu inspection in whatsapp_probe.py
+    "kAXTitleAttribute",
+    "AXMenuItemCmdChar",
+    "AXMenuItemCmdModifiers",
+}
+
+
+def _extract_queried_attributes(filepath: Path) -> list[str]:
+    """Parse AST to extract attribute names passed into AXUIElementCopyAttributeValue calls."""
+    tree = ast.parse(filepath.read_text(encoding="utf-8"), filename=str(filepath))
+    queried = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            func_name = getattr(func, "id", None) or getattr(func, "attr", None)
+            if func_name == "AXUIElementCopyAttributeValue" and len(node.args) >= 2:
+                arg = node.args[1]
+                if isinstance(arg, ast.Constant):  # string literal
+                    queried.append(arg.value)
+                elif isinstance(arg, ast.Attribute):  # ApplicationServices.kAX...
+                    queried.append(arg.attr)
+                elif isinstance(arg, ast.Name):
+                    queried.append(arg.id)
+    return queried
 
 
 def test_whatsapp_probe_source_privacy():
-    """Verify whatsapp_probe.py does not contain or query any forbidden content attributes."""
+    """Verify whatsapp_probe.py does not query forbidden content attributes."""
     assert PROBE_PATH.is_file(), f"Missing probe script at {PROBE_PATH}"
     source = PROBE_PATH.read_text(encoding="utf-8")
 
@@ -39,7 +96,7 @@ def test_whatsapp_probe_source_privacy():
 
 
 def test_whatsapp_experiment_source_privacy():
-    """Verify whatsapp_experiment.py does not contain or query any forbidden content attributes."""
+    """Verify whatsapp_experiment.py does not query forbidden content attributes."""
     assert EXPERIMENT_PATH.is_file(), f"Missing experiment script at {EXPERIMENT_PATH}"
     source = EXPERIMENT_PATH.read_text(encoding="utf-8")
 
@@ -47,27 +104,54 @@ def test_whatsapp_experiment_source_privacy():
         assert attr not in source, (
             f"PRIVACY VIOLATION in whatsapp_experiment.py: Found reference to content attribute '{attr}'"
         )
+    # Ensure no window/chat title querying
+    assert "kAXTitleAttribute" not in source
 
 
-def test_whatsapp_experiment_never_send_rule():
+def test_whatsapp_layout_probe_source_privacy():
+    """Verify whatsapp_layout_probe.py does not query forbidden content attributes."""
+    assert LAYOUT_PROBE_PATH.is_file(), f"Missing layout probe script at {LAYOUT_PROBE_PATH}"
+    source = LAYOUT_PROBE_PATH.read_text(encoding="utf-8")
+
+    for attr in FORBIDDEN_CONTENT_ATTRIBUTES:
+        assert attr not in source, (
+            f"PRIVACY VIOLATION in whatsapp_layout_probe.py: Found reference to content attribute '{attr}'"
+        )
+    assert "kAXTitleAttribute" not in source
+
+
+def test_only_structural_attributes_queried():
+    """Verify that ONLY allowed structural attributes are queried in experiment and layout scripts."""
+    for script_path in [EXPERIMENT_PATH, LAYOUT_PROBE_PATH]:
+        queried = _extract_queried_attributes(script_path)
+        assert queried, f"No AX attributes queried in {script_path.name}"
+        for attr in queried:
+            assert attr in ALLOWED_STRUCTURAL_ATTRIBUTE_NAMES, (
+                f"NON-STRUCTURAL ATTRIBUTE VIOLATION in {script_path.name}: "
+                f"Attribute '{attr}' is not an approved structural attribute!"
+            )
+
+
+def test_never_send_rule_across_whatsapp_scripts():
     """
     NEVER-SEND RULE AUDIT:
-    Verify whatsapp_experiment.py does NOT contain or post keycode 36 (kVK_Return / Enter).
+    Verify scripts do NOT contain or post keycode 36 (kVK_Return / Enter).
     """
-    source = EXPERIMENT_PATH.read_text(encoding="utf-8")
+    for script_path in [EXPERIMENT_PATH, LAYOUT_PROBE_PATH]:
+        source = script_path.read_text(encoding="utf-8")
+        assert "36" not in source, (
+            f"NEVER-SEND VIOLATION in {script_path.name}: Keycode 36 (kVK_Return) found!"
+        )
+        assert "kVK_Return" not in source, (
+            f"NEVER-SEND VIOLATION in {script_path.name}: kVK_Return found!"
+        )
 
-    # Ensure keycode 36 is nowhere in the file
-    assert "36" not in source, (
-        "NEVER-SEND VIOLATION in whatsapp_experiment.py: Keycode 36 (kVK_Return) found!"
-    )
-    # Ensure Return key name is not in key constants
-    assert "kVK_Return" not in source
 
-
-def test_gitignore_contains_probe_and_experiment_patterns():
-    """Verify .gitignore blocks any probe or experiment output files from being committed."""
+def test_gitignore_contains_probe_experiment_and_layout_patterns():
+    """Verify .gitignore blocks any probe, experiment, or layout output files from being committed."""
     assert GITIGNORE_PATH.is_file(), f"Missing .gitignore at {GITIGNORE_PATH}"
     content = GITIGNORE_PATH.read_text(encoding="utf-8")
 
     assert "*probe*.txt" in content or "probe" in content
     assert "*experiment*.txt" in content or "experiment" in content
+    assert "whatsapp_layout*.txt" in content or "whatsapp_layout" in content

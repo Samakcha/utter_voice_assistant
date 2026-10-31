@@ -408,6 +408,54 @@ def audit_container_children(container: Any) -> Tuple[int, List[Any], List[Dict[
     return total_count, accepted, excluded
 
 
+def build_summary_text(summary: Dict[str, Any]) -> str:
+    """Format structure-only summary of the experiment."""
+    lines = [
+        "=" * 70,
+        "WHATSAPP EXPERIMENT STRUCTURE-ONLY SUMMARY",
+        f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "=" * 70,
+        f"Mac Catalyst Flags Needed:         {'YES' if summary.get('catalyst_flags_needed') else 'NO'}",
+        f"Windows Count:                     {summary.get('windows_count', 1)}",
+        f"Tree Depth Reached:                {summary.get('max_depth_reached', 0)}",
+    ]
+    if "step_a" in summary:
+        s_a = summary["step_a"]
+        lines.append(
+            f"Step A (AXPress Search Focus):    {'PASS' if s_a.get('search_field_focused') else 'FAIL'} | Role: {s_a.get('focused_role')} | Subrole: {s_a.get('focused_subrole')} | Cursor in box: {'YES' if s_a.get('cursor_in_search_box') else 'NO'}"
+        )
+    if "step_c" in summary:
+        s_c = summary["step_c"]
+        lines.append(
+            f"Step C (Pre-Paste Guard & Paste): {'PASS' if s_c.get('guard_passed') else 'BLOCKED'} | 'Alex Test' in box: {'YES' if s_c.get('alex_test_in_search_box') else 'NO'} | Chat filtered: {'YES' if s_c.get('chat_list_filtered') else 'NO'} | Rows: {s_c.get('filtered_accepted_rows', 0)}"
+        )
+    if "step_d" in summary:
+        s_d = summary["step_d"]
+        lines.append(
+            f"Step D (AXCancel Clear Search):   {'PASS' if s_d.get('returned_full_list') else 'FAIL'} | Box emptied & returned: {'YES' if s_d.get('search_box_emptied_and_list_returned') else 'NO'} | Rows: {s_d.get('rows_after_cancel')}/{s_d.get('baseline_rows')}"
+        )
+    if "step_b" in summary:
+        s_b = summary["step_b"]
+        lines.append(
+            f"Step B (Cmd+F from Unfocused):    {'PASS' if s_b.get('search_field_focused') else 'FAIL'} | Role: {s_b.get('focused_role')} | Subrole: {s_b.get('focused_subrole')} | Cursor in box: {'YES' if s_b.get('cursor_in_search_box') else 'NO'}"
+        )
+    if "step_e" in summary:
+        s_e = summary["step_e"]
+        if s_e.get("skipped"):
+            lines.append(f"Step E (AXPress Row Selection):   SKIPPED ({s_e.get('reason')})")
+        else:
+            lines.append(
+                f"Step E (AXPress Row Selection):   {'PASS' if s_e.get('chat_opened') else 'FAIL'} | Row #{s_e.get('row_index')}"
+            )
+    if "step_f" in summary:
+        s_f = summary["step_f"]
+        lines.append(
+            f"Step F (Post-Open Focus Role):    Role: {s_f.get('focused_role')} | Subrole: {s_f.get('focused_subrole')}"
+        )
+    lines.append("=" * 70)
+    return "\n".join(lines)
+
+
 def check_is_focused(element: Any, app_element: Any) -> Tuple[bool, str, str]:
     """Check if element is focused and return focused element's role/subrole."""
     err, is_focused = ApplicationServices.AXUIElementCopyAttributeValue(
@@ -553,264 +601,276 @@ def main() -> int:
         for ex in excl_base:
             print(f"    #{ex['index']}: {ex['role']} (subrole: {ex['subrole']}, children: {ex['child_count']}) -> {ex['reason']}")
 
-    # -------------------------------------------------------------
-    # STEP A: AXPress on Search Field
-    # -------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print("STEP A: Focus Search Field via AXPress Action")
-    print("=" * 70)
-    print_safety_warning()
-    print("• Action: Call AXUIElementPerformAction(search_field, 'AXPress').")
-    print("• Safety: Zero keystrokes posted.")
-    safe_input("👉 Press [Enter] to execute Step A...", terminal_app)
+    try:
+        # -------------------------------------------------------------
+        # STEP A: AXPress on Search Field
+        # -------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("STEP A: Focus Search Field via AXPress Action")
+        print("=" * 70)
+        print_safety_warning()
+        print("• Action: Call AXUIElementPerformAction(search_field, 'AXPress').")
+        print("• Safety: Zero keystrokes posted.")
+        safe_input("👉 Press [Enter] to execute Step A...", terminal_app)
 
-    activate_whatsapp(wa_app)
-    err_a = ApplicationServices.AXUIElementPerformAction(search_field, "AXPress")
-    time.sleep(0.2)
-    is_foc_a, role_a, subrole_a = check_is_focused(search_field, app_el)
-    handback_focus(terminal_app)
-
-    print(f"\n[Step A Result]")
-    print(f"• Search Field Focused:      {is_foc_a}")
-    print(f"• Focused Element Role:      {role_a}")
-    print(f"• Focused Element Subrole:   {subrole_a}")
-    print(f"• Matches 'AXSearchField':   {subrole_a == 'AXSearchField'}")
-    summary["step_a"] = {
-        "action": "AXPress on search field",
-        "search_field_focused": is_foc_a,
-        "focused_role": role_a,
-        "focused_subrole": subrole_a,
-        "matches_guard": subrole_a == "AXSearchField",
-    }
-
-    # -------------------------------------------------------------
-    # STEP B: Cmd+F on Search Field
-    # -------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print("STEP B: Focus Search Field via Cmd+F")
-    print("=" * 70)
-    print_safety_warning()
-    print("• Action: Post Cmd+F (keycode 3 with Command modifier).")
-    print("• Safety: Whitelisted keycode only; no Return.")
-    safe_input("👉 Press [Enter] to execute Step B...", terminal_app)
-
-    activate_whatsapp(wa_app)
-    post_whitelisted_key(3, Quartz.kCGEventFlagMaskCommand)
-    time.sleep(0.25)
-    is_foc_b, role_b, subrole_b = check_is_focused(search_field, app_el)
-    handback_focus(terminal_app)
-
-    print(f"\n[Step B Result]")
-    print(f"• Search Field Focused:      {is_foc_b}")
-    print(f"• Focused Element Role:      {role_b}")
-    print(f"• Focused Element Subrole:   {subrole_b}")
-    print(f"• Matches 'AXSearchField':   {subrole_b == 'AXSearchField'}")
-    summary["step_b"] = {
-        "action": "Cmd+F",
-        "search_field_focused": is_foc_b,
-        "focused_role": role_b,
-        "focused_subrole": subrole_b,
-        "matches_guard": subrole_b == "AXSearchField",
-    }
-
-    # -------------------------------------------------------------
-    # STEP C: Pre-Paste Focus Guard & Paste 'Alex Test'
-    # -------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print("STEP C: Test Pre-Paste Focus Guard & Paste 'Alex Test'")
-    print("=" * 70)
-    print_safety_warning()
-    print("• Guard: Checks focused element subrole == 'AXSearchField'. If NOT, paste is ABORTED.")
-    print("• Action: Paste 'Alex Test' via Cmd+V (keycode 9 with Command flag) and restore clipboard.")
-    safe_input("👉 Press [Enter] to execute Step C...", terminal_app)
-
-    activate_whatsapp(wa_app)
-    is_foc_c, role_c, subrole_c = check_is_focused(search_field, app_el)
-
-    guard_passed = (subrole_c == "AXSearchField")
-    tot_after_c = 0
-    accepted_after_c: List[Any] = []
-    excl_after_c: List[Dict[str, Any]] = []
-
-    if not guard_passed:
-        handback_focus(terminal_app)
-        print(f"\n❌ FOCUS GUARD BLOCKED PASTE: Focused subrole is '{subrole_c}' != 'AXSearchField'.")
-        summary["step_c"] = {"guard_passed": False, "pasted": False}
-    else:
-        # Pre-paste row count
-        tot_pre, accepted_pre, _ = audit_container_children(container)
-
-        pb = NSPasteboard.generalPasteboard()
-        orig_text = pb.stringForType_(NSPasteboardTypeString)
-        try:
-            pb.clearContents()
-            pb.setString_forType_("Alex Test", NSPasteboardTypeString)
-            try:
-                pb.setString_forType_("1", "org.nspasteboard.TransientType")
-            except Exception:
-                pass
-
-            post_whitelisted_key(9, Quartz.kCGEventFlagMaskCommand)
-            time.sleep(0.4)  # Allow search filter to populate
-
-            tot_after_c, accepted_after_c, excl_after_c = audit_container_children(container)
-        finally:
-            pb.clearContents()
-            if orig_text is not None:
-                pb.setString_forType_(orig_text, NSPasteboardTypeString)
-
+        activate_whatsapp(wa_app)
+        err_a = ApplicationServices.AXUIElementPerformAction(search_field, "AXPress")
+        time.sleep(0.2)
+        is_foc_a, role_a, subrole_a = check_is_focused(search_field, app_el)
         handback_focus(terminal_app)
 
-        print(f"\n[Step C Result]")
-        print(f"• Focus Guard Passed:        {guard_passed}")
-        print(f"• Pre-Paste Rows Count:      {len(accepted_pre)}")
-        print(f"• Filtered Total Children:   {tot_after_c}")
-        print(f"• Filtered Accepted Rows:    {len(accepted_after_c)}")
-        print(f"• Filtered Excluded Items:   {len(excl_after_c)}")
-        if excl_after_c:
-            print("  Excluded items during search (sections/headers):")
-            for ex in excl_after_c:
-                print(f"    #{ex['index']}: {ex['role']} (subrole: {ex['subrole']}) -> {ex['reason']}")
-
-        summary["step_c"] = {
-            "guard_passed": True,
-            "pasted": True,
-            "pre_rows": len(accepted_pre),
-            "filtered_total": tot_after_c,
-            "filtered_accepted_rows": len(accepted_after_c),
-            "filtered_excluded": len(excl_after_c),
+        print(f"\n[Step A Result]")
+        print(f"• Search Field Focused:      {is_foc_a}")
+        print(f"• Focused Element Role:      {role_a}")
+        print(f"• Focused Element Subrole:   {subrole_a}")
+        print(f"• Matches 'AXSearchField':   {subrole_a == 'AXSearchField'}")
+        ans_a = safe_input("👀 Look at WhatsApp: Is the cursor in the search box? [y/n]: ", terminal_app).strip().lower()
+        summary["step_a"] = {
+            "action": "AXPress on search field",
+            "search_field_focused": is_foc_a,
+            "focused_role": role_a,
+            "focused_subrole": subrole_a,
+            "matches_guard": subrole_a == "AXSearchField",
+            "cursor_in_search_box": ans_a.startswith("y"),
         }
 
-    # -------------------------------------------------------------
-    # STEP D: Clear Search via AXCancel on Search Field
-    # -------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print("STEP D: Test Search Clear & Dismiss via AXCancel Action")
-    print("=" * 70)
-    print_safety_warning()
-    print("• Action: Call AXUIElementPerformAction(search_field, 'AXCancel').")
-    print("• Safety: Zero keystrokes (no Delete, no Cmd+A).")
-    print("• Goal:   Verify if AXCancel restores the full chat list count.")
-    safe_input("👉 Press [Enter] to execute Step D...", terminal_app)
+        # -------------------------------------------------------------
+        # STEP C: Pre-Paste Focus Guard & Paste 'Alex Test'
+        # -------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("STEP C: Test Pre-Paste Focus Guard & Paste 'Alex Test'")
+        print("=" * 70)
+        print_safety_warning()
+        print("• Guard: Checks focused element subrole == 'AXSearchField'. If NOT, paste is ABORTED.")
+        print("• Action: Paste 'Alex Test' via Cmd+V (keycode 9 with Command flag) and restore clipboard.")
+        safe_input("👉 Press [Enter] to execute Step C...", terminal_app)
 
-    activate_whatsapp(wa_app)
-    err_d = ApplicationServices.AXUIElementPerformAction(search_field, "AXCancel")
-    time.sleep(0.4)
-    tot_d, accepted_d, _ = audit_container_children(container)
-    handback_focus(terminal_app)
+        activate_whatsapp(wa_app)
+        is_foc_c, role_c, subrole_c = check_is_focused(search_field, app_el)
 
-    returned_full = (len(accepted_d) == len(rows_base))
-    print(f"\n[Step D Result]")
-    print(f"• AXCancel Call Return:      {'SUCCESS (0)' if err_d == 0 else f'ERROR ({err_d})'}")
-    print(f"• Rows After AXCancel:       {len(accepted_d)} (Baseline was {len(rows_base)})")
-    print(f"• Restored Full Chat List:   {'YES' if returned_full else 'NO'}")
-    summary["step_d"] = {
-        "action": "AXCancel on search field",
-        "returned_full_list": returned_full,
-        "rows_after_cancel": len(accepted_d),
-        "baseline_rows": len(rows_base),
-    }
+        guard_passed = (subrole_c == "AXSearchField")
+        tot_after_c = 0
+        accepted_after_c: List[Any] = []
+        excl_after_c: List[Dict[str, Any]] = []
 
-    # -------------------------------------------------------------
-    # STEP E: Select Row N via AXPress Action
-    # -------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print("STEP E: Select Row N via AXPress Action (Zero Keystrokes, NO Return)")
-    print("=" * 70)
-    print_safety_warning()
+        if not guard_passed:
+            handback_focus(terminal_app)
+            print(f"\n❌ FOCUS GUARD BLOCKED PASTE: Focused subrole is '{subrole_c}' != 'AXSearchField'.")
+            summary["step_c"] = {"guard_passed": False, "pasted": False}
+        else:
+            tot_pre, accepted_pre, _ = audit_container_children(container)
 
-    current_tot, current_accepted, _ = audit_container_children(container)
-    print(f"• Current selectable chat rows: {len(current_accepted)}")
-    row_choice = safe_input(f"Enter row index to open (1 to {len(current_accepted)}) [default 1]: ", terminal_app).strip()
-    row_idx = int(row_choice) if row_choice.isdigit() and 1 <= int(row_choice) <= len(current_accepted) else 1
+            pb = NSPasteboard.generalPasteboard()
+            orig_text = pb.stringForType_(NSPasteboardTypeString)
+            try:
+                pb.clearContents()
+                pb.setString_forType_("Alex Test", NSPasteboardTypeString)
+                try:
+                    pb.setString_forType_("1", "org.nspasteboard.TransientType")
+                except Exception:
+                    pass
 
-    print(f"• Target: Row #{row_idx}")
-    safe_input(f"👉 Press [Enter] to execute AXPress on Row #{row_idx}...", terminal_app)
+                post_whitelisted_key(9, Quartz.kCGEventFlagMaskCommand)
+                time.sleep(0.4)  # Allow search filter to populate
 
-    activate_whatsapp(wa_app)
-    err_e = ApplicationServices.AXUIElementPerformAction(current_accepted[row_idx - 1], "AXPress")
-    time.sleep(0.35)
-    handback_focus(terminal_app)
+                tot_after_c, accepted_after_c, excl_after_c = audit_container_children(container)
+            finally:
+                pb.clearContents()
+                if orig_text is not None:
+                    pb.setString_forType_(orig_text, NSPasteboardTypeString)
 
-    print(f"\n[Step E Result]")
-    print(f"• AXPress Call Return:       {'SUCCESS (0)' if err_e == 0 else f'ERROR ({err_e})'}")
-    user_obs = safe_input("👀 Look at WhatsApp on screen: Did the chat open? [y/n]: ", terminal_app).strip().lower()
-    confirmed = user_obs.startswith("y")
-    print(f"• User Confirmed Opened:     {'YES' if confirmed else 'NO'}")
-    summary["step_e"] = {
-        "row_index": row_idx,
-        "axpress_success": err_e == 0,
-        "chat_opened": confirmed,
-    }
+            handback_focus(terminal_app)
 
-    # -------------------------------------------------------------
-    # STEP F: Post-Selection Focus Role Inspection
-    # -------------------------------------------------------------
-    print("\n" + "=" * 70)
-    print("STEP F: Inspect Focused Element Role After Chat Opens")
-    print("=" * 70)
-    print("• Action: Query kAXFocusedUIElementAttribute from WhatsApp.")
-    print("• Safety: Queries ROLE and SUBROLE ONLY. Never reads text, values, or names.")
-    safe_input("👉 Press [Enter] to inspect focused element role...", terminal_app)
+            print(f"\n[Step C Result]")
+            print(f"• Focus Guard Passed:        {guard_passed}")
+            print(f"• Pre-Paste Rows Count:      {len(accepted_pre)}")
+            print(f"• Filtered Total Children:   {tot_after_c}")
+            print(f"• Filtered Accepted Rows:    {len(accepted_after_c)}")
+            print(f"• Filtered Excluded Items:   {len(excl_after_c)}")
+            if excl_after_c:
+                print("  Excluded items during search (sections/headers):")
+                for ex in excl_after_c:
+                    print(f"    #{ex['index']}: {ex['role']} (subrole: {ex['subrole']}) -> {ex['reason']}")
 
-    activate_whatsapp(wa_app)
-    time.sleep(0.1)
-    err_f, focused_f = ApplicationServices.AXUIElementCopyAttributeValue(
-        app_el, ApplicationServices.kAXFocusedUIElementAttribute, None
-    )
-    f_role_f = "None"
-    f_subrole_f = "None"
-    if err_f == 0 and focused_f:
-        err_rf, rf = ApplicationServices.AXUIElementCopyAttributeValue(
-            focused_f, ApplicationServices.kAXRoleAttribute, None
+            ans_c1 = safe_input("👀 Look at WhatsApp: Did 'Alex Test' appear in the search box? [y/n]: ", terminal_app).strip().lower()
+            ans_c2 = safe_input("👀 Look at WhatsApp: Did the chat list filter? [y/n]: ", terminal_app).strip().lower()
+            summary["step_c"] = {
+                "guard_passed": True,
+                "pasted": True,
+                "pre_rows": len(accepted_pre),
+                "filtered_total": tot_after_c,
+                "filtered_accepted_rows": len(accepted_after_c),
+                "filtered_excluded": len(excl_after_c),
+                "alex_test_in_search_box": ans_c1.startswith("y"),
+                "chat_list_filtered": ans_c2.startswith("y"),
+            }
+
+        # -------------------------------------------------------------
+        # STEP D: Clear Search via AXCancel on Search Field
+        # -------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("STEP D: Test Search Clear & Dismiss via AXCancel Action")
+        print("=" * 70)
+        print_safety_warning()
+        print("• Action: Call AXUIElementPerformAction(search_field, 'AXCancel').")
+        print("• Safety: Zero keystrokes (no Delete, no Cmd+A).")
+        print("• Goal:   Verify if AXCancel restores the full chat list count.")
+        safe_input("👉 Press [Enter] to execute Step D...", terminal_app)
+
+        activate_whatsapp(wa_app)
+        err_d = ApplicationServices.AXUIElementPerformAction(search_field, "AXCancel")
+        time.sleep(0.4)
+        tot_d, accepted_d, _ = audit_container_children(container)
+        handback_focus(terminal_app)
+
+        returned_full = (len(accepted_d) == len(rows_base))
+        print(f"\n[Step D Result]")
+        print(f"• AXCancel Call Return:      {'SUCCESS (0)' if err_d == 0 else f'ERROR ({err_d})'}")
+        print(f"• Rows After AXCancel:       {len(accepted_d)} (Baseline was {len(rows_base)})")
+        print(f"• Restored Full Chat List:   {'YES' if returned_full else 'NO'}")
+
+        ans_d = safe_input("👀 Look at WhatsApp: Did the search box empty and the full list return? [y/n]: ", terminal_app).strip().lower()
+        summary["step_d"] = {
+            "action": "AXCancel on search field",
+            "returned_full_list": returned_full,
+            "rows_after_cancel": len(accepted_d),
+            "baseline_rows": len(rows_base),
+            "search_box_emptied_and_list_returned": ans_d.startswith("y"),
+        }
+
+        # -------------------------------------------------------------
+        # STEP B: Focus Search Field via Cmd+F from Unfocused State (After AXCancel)
+        # -------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("STEP B: Focus Search Field via Cmd+F (From Unfocused State)")
+        print("=" * 70)
+        print_safety_warning()
+        print("• Action: Post Cmd+F (keycode 3 with Command modifier) after AXCancel dismissed search.")
+        print("• Safety: Whitelisted keycode only; no Return.")
+        safe_input("👉 Press [Enter] to execute Step B (Cmd+F from unfocused state)...", terminal_app)
+
+        activate_whatsapp(wa_app)
+        post_whitelisted_key(3, Quartz.kCGEventFlagMaskCommand)
+        time.sleep(0.25)
+        is_foc_b, role_b, subrole_b = check_is_focused(search_field, app_el)
+        handback_focus(terminal_app)
+
+        print(f"\n[Step B Result]")
+        print(f"• Search Field Focused:      {is_foc_b}")
+        print(f"• Focused Element Role:      {role_b}")
+        print(f"• Focused Element Subrole:   {subrole_b}")
+        print(f"• Matches 'AXSearchField':   {subrole_b == 'AXSearchField'}")
+        ans_b = safe_input("👀 Look at WhatsApp: Is the cursor in the search box after Cmd+F? [y/n]: ", terminal_app).strip().lower()
+        summary["step_b"] = {
+            "action": "Cmd+F from unfocused state",
+            "search_field_focused": is_foc_b,
+            "focused_role": role_b,
+            "focused_subrole": subrole_b,
+            "matches_guard": subrole_b == "AXSearchField",
+            "cursor_in_search_box": ans_b.startswith("y"),
+        }
+
+        # Dismiss search again with AXCancel to leave clean state for Step E
+        activate_whatsapp(wa_app)
+        ApplicationServices.AXUIElementPerformAction(search_field, "AXCancel")
+        time.sleep(0.2)
+        handback_focus(terminal_app)
+
+        # -------------------------------------------------------------
+        # STEP E: Select Row N via AXPress Action
+        # -------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("STEP E: Select Row N via AXPress Action (Zero Keystrokes, NO Return)")
+        print("=" * 70)
+        print_safety_warning()
+
+        current_tot, current_accepted, _ = audit_container_children(container)
+        print(f"• Current selectable chat rows: {len(current_accepted)}")
+
+        if len(current_accepted) == 0:
+            print("⚠️ SKIPPING Step E: 0 selectable chat rows detected in container.")
+            print("   (The probed container had 0 interactive row children).")
+            summary["step_e"] = {
+                "skipped": True,
+                "reason": "0 selectable chat rows detected in container",
+            }
+        else:
+            row_choice = safe_input(
+                f"Enter row index to open (1 to {len(current_accepted)}) [default 1]: ",
+                terminal_app,
+            ).strip()
+            row_idx = int(row_choice) if row_choice.isdigit() and 1 <= int(row_choice) <= len(current_accepted) else 1
+
+            print(f"• Target: Row #{row_idx}")
+            safe_input(f"👉 Press [Enter] to execute AXPress on Row #{row_idx}...", terminal_app)
+
+            activate_whatsapp(wa_app)
+            err_e = ApplicationServices.AXUIElementPerformAction(current_accepted[row_idx - 1], "AXPress")
+            time.sleep(0.35)
+            handback_focus(terminal_app)
+
+            print(f"\n[Step E Result]")
+            print(f"• AXPress Call Return:       {'SUCCESS (0)' if err_e == 0 else f'ERROR ({err_e})'}")
+            user_obs = safe_input("👀 Look at WhatsApp on screen: Did the chat open? [y/n]: ", terminal_app).strip().lower()
+            confirmed = user_obs.startswith("y")
+            print(f"• User Confirmed Opened:     {'YES' if confirmed else 'NO'}")
+            summary["step_e"] = {
+                "skipped": False,
+                "row_index": row_idx,
+                "axpress_success": err_e == 0,
+                "chat_opened": confirmed,
+            }
+
+        # -------------------------------------------------------------
+        # STEP F: Post-Selection Focus Role Inspection
+        # -------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("STEP F: Inspect Focused Element Role After Chat Opens")
+        print("=" * 70)
+        print("• Action: Query kAXFocusedUIElementAttribute from WhatsApp.")
+        print("• Safety: Queries ROLE and SUBROLE ONLY. Never reads text, values, or names.")
+        safe_input("👉 Press [Enter] to inspect focused element role...", terminal_app)
+
+        activate_whatsapp(wa_app)
+        time.sleep(0.1)
+        err_f, focused_f = ApplicationServices.AXUIElementCopyAttributeValue(
+            app_el, ApplicationServices.kAXFocusedUIElementAttribute, None
         )
-        if err_rf == 0 and rf:
-            f_role_f = str(rf)
-        err_srf, srf = ApplicationServices.AXUIElementCopyAttributeValue(
-            focused_f, ApplicationServices.kAXSubroleAttribute, None
-        )
-        if err_srf == 0 and srf:
-            f_subrole_f = str(srf)
-    handback_focus(terminal_app)
+        f_role_f = "None"
+        f_subrole_f = "None"
+        if err_f == 0 and focused_f:
+            err_rf, rf = ApplicationServices.AXUIElementCopyAttributeValue(
+                focused_f, ApplicationServices.kAXRoleAttribute, None
+            )
+            if err_rf == 0 and rf:
+                f_role_f = str(rf)
+            err_srf, srf = ApplicationServices.AXUIElementCopyAttributeValue(
+                focused_f, ApplicationServices.kAXSubroleAttribute, None
+            )
+            if err_srf == 0 and srf:
+                f_subrole_f = str(srf)
+        handback_focus(terminal_app)
 
-    print(f"\n[Step F Result]")
-    print(f"• Focused Element Role:      {f_role_f}")
-    print(f"• Focused Element Subrole:   {f_subrole_f}")
-    summary["step_f"] = {
-        "focused_role": f_role_f,
-        "focused_subrole": f_subrole_f,
-    }
+        print(f"\n[Step F Result]")
+        print(f"• Focused Element Role:      {f_role_f}")
+        print(f"• Focused Element Subrole:   {f_subrole_f}")
+        summary["step_f"] = {
+            "focused_role": f_role_f,
+            "focused_subrole": f_subrole_f,
+        }
 
-    # -------------------------------------------------------------
-    # SUMMARY BLOCK (SAFE TO COPY AND PASTE)
-    # -------------------------------------------------------------
-    summary_lines = [
-        "======================================================================",
-        "WHATSAPP EXPERIMENT STRUCTURE-ONLY SUMMARY",
-        f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "======================================================================",
-        f"Mac Catalyst Flags Needed:         {'YES' if summary.get('catalyst_flags_needed') else 'NO'}",
-        f"Windows Count:                     {summary.get('windows_count', 1)}",
-        f"Tree Depth Reached:                {summary.get('max_depth_reached', 0)}",
-        f"Step A (AXPress Search Focus):    {'PASS' if summary['step_a']['search_field_focused'] else 'FAIL'} | Role: {summary['step_a']['focused_role']} | Subrole: {summary['step_a']['focused_subrole']}",
-        f"Step B (Cmd+F Search Focus):      {'PASS' if summary['step_b']['search_field_focused'] else 'FAIL'} | Role: {summary['step_b']['focused_role']} | Subrole: {summary['step_b']['focused_subrole']}",
-        f"Focus Guard Matches Subrole:      {'YES' if summary['step_a']['matches_guard'] or summary['step_b']['matches_guard'] else 'NO'}",
-        f"Step C (Pre-Paste Guard & Paste): {'PASS' if summary['step_c']['guard_passed'] else 'BLOCKED'} | Pre: {summary['step_c'].get('pre_rows', 0)} -> Filtered Rows: {summary['step_c'].get('filtered_accepted_rows', 0)} (Excluded: {summary['step_c'].get('filtered_excluded', 0)})",
-        f"Step D (AXCancel Clear Search):   {'PASS' if summary['step_d']['returned_full_list'] else 'FAIL'} | Restored: {summary['step_d']['rows_after_cancel']}/{summary['step_d']['baseline_rows']} rows",
-        f"Step E (AXPress Row Selection):   {'PASS' if summary['step_e']['chat_opened'] else 'FAIL'} | Row #{summary['step_e']['row_index']}",
-        f"Step F (Post-Open Focus Role):    Role: {summary['step_f']['focused_role']} | Subrole: {summary['step_f']['focused_subrole']}",
-        "======================================================================",
-    ]
-    summary_text = "\n".join(summary_lines)
+        return 0
 
-    print("\n" + summary_text + "\n")
+    finally:
+        summary_text = build_summary_text(summary)
+        print("\n" + summary_text + "\n")
 
-    summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
-    try:
-        summary_file.write_text(summary_text, encoding="utf-8")
-        print(f"Summary written to: {summary_file.name} (gitignored)")
-    except Exception as e:
-        print(f"Could not write summary file: {e}")
+        summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
+        try:
+            summary_file.write_text(summary_text, encoding="utf-8")
+            print(f"Summary written to: {summary_file.name} (gitignored)")
+        except Exception as e:
+            print(f"Could not write summary file: {e}")
 
     return 0
 
