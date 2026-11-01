@@ -29,6 +29,7 @@ from collections import Counter, deque
 from datetime import datetime
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,7 +48,13 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 try:
     import ApplicationServices
-    from AppKit import NSPasteboard, NSPasteboardTypeString, NSRunningApplication, NSWorkspace
+    from AppKit import (
+        NSPasteboard,
+        NSPasteboardTypeString,
+        NSRunningApplication,
+        NSScreen,
+        NSWorkspace,
+    )
     import Quartz
 except ImportError as e:
     print(f"Error: Required macOS frameworks (PyObjC / Quartz) not available: {e}")
@@ -79,27 +86,71 @@ def get_whatsapp_app() -> Optional[NSRunningApplication]:
     return None
 
 
-def activate_whatsapp_and_verify(app: NSRunningApplication, timeout_sec: float = 2.0) -> bool:
+def activate_whatsapp_and_verify(app: NSRunningApplication, timeout_sec: float = 3.0) -> bool:
     """
-    Activate WhatsApp and verify it is frontmost within timeout_sec.
-    Aborts the step if WhatsApp cannot be brought to the front.
+    Activate WhatsApp and verify it is frontmost:
+    1. Check if already frontmost.
+    2. Bring WhatsApp forward with system launcher: subprocess `open -b net.whatsapp.WhatsApp`
+       and poll NSWorkspace.frontmostApplication() up to timeout_sec (3 s).
+    3. If still not frontmost, second attempt using NSRunningApplication.activateWithOptions_.
+    4. Manual focus mode: if activation still fails, prompt user to click WhatsApp window,
+       then run a 5-second countdown polling every 0.5 s whether WhatsApp is frontmost.
+       As soon as it is, return True immediately to run the step.
+       If it never becomes frontmost, abort safely.
+       No Enter press is needed in manual mode (prevents Enter from reaching WhatsApp).
     """
     ws = NSWorkspace.sharedWorkspace()
     front = ws.frontmostApplication()
     if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
         return True
 
-    app.activateWithOptions_(ApplicationServices.NSApplicationActivateIgnoringOtherApps)
+    # 1. System launcher: open -b net.whatsapp.WhatsApp
+    print("• Bringing WhatsApp forward via system launcher: open -b net.whatsapp.WhatsApp...")
+    try:
+        subprocess.run(["open", "-b", WHATSAPP_BUNDLE_ID], capture_output=True, check=False)
+    except Exception as e:
+        print(f"  (System launcher notice: {e})")
+
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
         front = ws.frontmostApplication()
         if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
             return True
-        time.sleep(0.05)
+        time.sleep(0.1)
+
+    # 2. Second attempt: NSRunningApplication.activateWithOptions_
+    print("• Second activation attempt: NSRunningApplication.activateWithOptions_...")
+    app.activateWithOptions_(ApplicationServices.NSApplicationActivateIgnoringOtherApps)
+    second_deadline = time.time() + 1.0
+    while time.time() < second_deadline:
+        front = ws.frontmostApplication()
+        if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
+            return True
+        time.sleep(0.1)
+
+    # 3. Manual focus mode
+    curr_front = ws.frontmostApplication()
+    curr_id = curr_front.bundleIdentifier() if curr_front else "None"
+    print(f"\n⚠️ Automatic activation did not bring WhatsApp frontmost (current frontmost: {curr_id}).")
+    print("👉 MANUAL FOCUS MODE: Please click the WhatsApp window with your mouse now!")
+    print("   (Checking every 0.5s for up to 5s; do NOT press Enter)...")
+
+    countdown_deadline = time.time() + 5.0
+    tick = 0
+    while time.time() < countdown_deadline:
+        front = ws.frontmostApplication()
+        if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
+            print("✅ Detected WhatsApp is frontmost! Continuing with step...")
+            return True
+        time.sleep(0.5)
+        tick += 1
+        if tick % 2 == 0:
+            remaining = int(round(max(0.0, countdown_deadline - time.time())))
+            print(f"   ...waiting for click ({remaining}s remaining)...")
 
     curr_front = ws.frontmostApplication()
     curr_id = curr_front.bundleIdentifier() if curr_front else "None"
-    print(f"\n❌ ACTIVATION FAILED: WhatsApp did not become frontmost within {timeout_sec}s!")
+    print(f"\n❌ ACTIVATION FAILED: WhatsApp did not become frontmost within 5s manual focus period.")
     print(f"   Current frontmost app is: {curr_id}")
     return False
 
@@ -110,13 +161,33 @@ def handback_focus(terminal_app: NSRunningApplication, timeout_sec: float = 2.0)
     Re-activate user's Terminal and verify it is frontmost before accepting input.
     Prevents user Enter from reaching WhatsApp.
     """
+    ws = NSWorkspace.sharedWorkspace()
+    front = ws.frontmostApplication()
+    if front and front.processIdentifier() == terminal_app.processIdentifier():
+        return True
+
     terminal_app.activateWithOptions_(ApplicationServices.NSApplicationActivateIgnoringOtherApps)
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        front = NSWorkspace.sharedWorkspace().frontmostApplication()
+        front = ws.frontmostApplication()
         if front and front.processIdentifier() == terminal_app.processIdentifier():
             return True
         time.sleep(0.05)
+
+    # Fallback to system launcher for terminal bundle
+    term_bundle = terminal_app.bundleIdentifier()
+    if term_bundle:
+        try:
+            subprocess.run(["open", "-b", str(term_bundle)], capture_output=True, check=False)
+        except Exception:
+            pass
+        fallback_deadline = time.time() + 1.0
+        while time.time() < fallback_deadline:
+            front = ws.frontmostApplication()
+            if front and front.processIdentifier() == terminal_app.processIdentifier():
+                return True
+            time.sleep(0.05)
+
     return False
 
 
@@ -211,6 +282,89 @@ def check_is_focused(element: Any, app_element: Any) -> Tuple[bool, str, str]:
     return focused_bool, f_role, f_subrole
 
 
+def report_window_and_screen_visibility(main_win: Optional[Any]) -> Dict[str, Any]:
+    """
+    Report whether the WhatsApp window is on-screen:
+    Print window position and size (numbers only), and the bounds of each connected display
+    (NSScreen frames, numbers only), showing if the window sits outside the visible area.
+    """
+    screens = NSScreen.screens() or []
+    primary_h = float(screens[0].frame().size.height) if len(screens) > 0 else 0.0
+
+    print("\n" + "=" * 70)
+    print("DISPLAY & WINDOW VISIBILITY REPORT (NUMBERS ONLY)")
+    print("=" * 70)
+    print(f"• Connected Displays: {len(screens)}")
+
+    screen_reports = []
+    for i, scr in enumerate(screens):
+        f = scr.frame()
+        c_x, c_y, c_w, c_h = float(f.origin.x), float(f.origin.y), float(f.size.width), float(f.size.height)
+        ax_x = c_x
+        ax_y = primary_h - (c_y + c_h)
+        ax_w = c_w
+        ax_h = c_h
+        print(
+            f"  - Display #{i + 1}: NSScreen frame origin=({c_x:.1f}, {c_y:.1f}) size=({c_w:.1f}, {c_h:.1f}) "
+            f"| AX bounds origin=({ax_x:.1f}, {ax_y:.1f}) size=({ax_w:.1f}, {ax_h:.1f})"
+        )
+        screen_reports.append({
+            "index": i + 1,
+            "cocoa_frame": (c_x, c_y, c_w, c_h),
+            "ax_bounds": (ax_x, ax_y, ax_w, ax_h),
+        })
+
+    if not main_win:
+        print("• WhatsApp Main Window: NOT LOCATED")
+        print("=" * 70)
+        return {
+            "on_screen": False,
+            "reason": "Main window not located",
+            "window_pos": (0.0, 0.0),
+            "window_size": (0.0, 0.0),
+            "screens": screen_reports,
+            "overlapping_displays": [],
+        }
+
+    err_pos, pos_val = ApplicationServices.AXUIElementCopyAttributeValue(
+        main_win, ApplicationServices.kAXPositionAttribute, None
+    )
+    win_x, win_y = extract_point(pos_val) if err_pos == 0 else (0.0, 0.0)
+
+    err_sz, sz_val = ApplicationServices.AXUIElementCopyAttributeValue(
+        main_win, ApplicationServices.kAXSizeAttribute, None
+    )
+    win_w, win_h = extract_size(sz_val) if err_sz == 0 else (0.0, 0.0)
+
+    print(f"• WhatsApp Window Frame: pos=({win_x:.1f}, {win_y:.1f}) size=({win_w:.1f}, {win_h:.1f})")
+
+    # Evaluate overlap with connected displays in AX coordinate space
+    is_on_screen = False
+    overlapping_displays = []
+    for s in screen_reports:
+        ax_x, ax_y, ax_w, ax_h = s["ax_bounds"]
+        x_overlap = max(0.0, min(win_x + win_w, ax_x + ax_w) - max(win_x, ax_x))
+        y_overlap = max(0.0, min(win_y + win_h, ax_y + ax_h) - max(win_y, ax_y))
+        if x_overlap > 0.0 and y_overlap > 0.0:
+            is_on_screen = True
+            overlapping_displays.append(s["index"])
+
+    if is_on_screen:
+        disp_str = ", ".join(f"#{idx}" for idx in overlapping_displays)
+        print(f"• Window Visibility: ON-SCREEN (overlaps display {disp_str})")
+    else:
+        print("• Window Visibility: ⚠️ OUTSIDE VISIBLE AREA (window sits outside display bounds)")
+    print("=" * 70)
+
+    return {
+        "on_screen": is_on_screen,
+        "window_pos": (win_x, win_y),
+        "window_size": (win_w, win_h),
+        "screens": screen_reports,
+        "overlapping_displays": overlapping_displays,
+    }
+
+
 def build_summary_text(summary: Dict[str, Any]) -> str:
     """Format structure-only summary of the experiment."""
     lines = [
@@ -224,6 +378,22 @@ def build_summary_text(summary: Dict[str, Any]) -> str:
         f"Initial Selectable Buttons:        {summary.get('initial_buttons_count', 0)}",
         f"Row Pitch:                         {summary.get('row_pitch', 0.0):.1f} px",
     ]
+    if "window_geom" in summary:
+        wg = summary["window_geom"]
+        pos = wg.get("window_pos", (0.0, 0.0))
+        sz = wg.get("window_size", (0.0, 0.0))
+        lines.append(
+            f"WhatsApp Window Pos/Size:          pos=({pos[0]:.1f}, {pos[1]:.1f}) size=({sz[0]:.1f}, {sz[1]:.1f})"
+        )
+        lines.append(
+            f"Window Visible On-Screen:          {'YES' if wg.get('on_screen') else 'NO (OUTSIDE VISIBLE AREA)'}"
+        )
+        for s in wg.get("screens", []):
+            cf = s["cocoa_frame"]
+            lines.append(
+                f"Display #{s['index']} Frame:                  "
+                f"origin=({cf[0]:.1f}, {cf[1]:.1f}) size=({cf[2]:.1f}, {cf[3]:.1f})"
+            )
     if "step_a" in summary:
         s_a = summary["step_a"]
         lines.append(
@@ -301,6 +471,7 @@ def main() -> int:
 
     # 4. Find Main Window and Search Field
     main_win = get_main_window(app_el)
+    win_geom = report_window_and_screen_visibility(main_win)
     if not main_win:
         print("❌ Could not locate WhatsApp main window.")
         return 1
@@ -336,6 +507,7 @@ def main() -> int:
         "initial_wrappers_count": base_geo["wrappers_count"],
         "initial_buttons_count": base_geo["buttons_count"],
         "row_pitch": base_geo["row_pitch"],
+        "window_geom": win_geom,
     }
 
     summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
@@ -352,7 +524,7 @@ def main() -> int:
         print("• Safety: Zero keystrokes posted.")
         safe_input("👉 Press [Enter] to execute Step A...", terminal_app)
 
-        if not activate_whatsapp_and_verify(wa_app, 2.0):
+        if not activate_whatsapp_and_verify(wa_app, 3.0):
             print("❌ Aborting Step A: WhatsApp could not be brought frontmost.")
             summary["step_a"] = {"search_field_focused": False, "error": "Activation failed"}
             return 1
@@ -389,7 +561,7 @@ def main() -> int:
         print("• Action: Paste 'Alex Test' via Cmd+V (keycode 9 with Command flag) and restore clipboard.")
         safe_input("👉 Press [Enter] to execute Step C...", terminal_app)
 
-        if not activate_whatsapp_and_verify(wa_app, 2.0):
+        if not activate_whatsapp_and_verify(wa_app, 3.0):
             print("❌ Aborting Step C: WhatsApp could not be brought frontmost.")
             summary["step_c"] = {"guard_passed": False, "pasted": False, "error": "Activation failed"}
             return 1
@@ -453,7 +625,7 @@ def main() -> int:
         print("• Goal:   Verify if AXCancel restores the full chat list count.")
         safe_input("👉 Press [Enter] to execute Step D...", terminal_app)
 
-        if not activate_whatsapp_and_verify(wa_app, 2.0):
+        if not activate_whatsapp_and_verify(wa_app, 3.0):
             print("❌ Aborting Step D: WhatsApp could not be brought frontmost.")
             summary["step_d"] = {"returned_full_list": False, "error": "Activation failed"}
             return 1
@@ -512,7 +684,7 @@ def main() -> int:
             print("• Safety: Whitelisted keycode only; no Return.")
             safe_input("👉 Press [Enter] to execute Step B (Cmd+F from unfocused state)...", terminal_app)
 
-            if not activate_whatsapp_and_verify(wa_app, 2.0):
+            if not activate_whatsapp_and_verify(wa_app, 3.0):
                 print("❌ Aborting Step B: WhatsApp could not be brought frontmost.")
                 summary["step_b"] = {"status": "FAIL", "error": "Activation failed"}
                 return 1
@@ -539,7 +711,7 @@ def main() -> int:
             }
 
             # Dismiss search again with AXCancel to leave clean state for Step E
-            if activate_whatsapp_and_verify(wa_app, 2.0):
+            if activate_whatsapp_and_verify(wa_app, 3.0):
                 ApplicationServices.AXUIElementPerformAction(search_field, "AXCancel")
                 time.sleep(0.2)
             handback_focus(terminal_app)
@@ -612,7 +784,7 @@ def main() -> int:
 
             safe_input(f"👉 Press [Enter] to execute AXPress on Row #{row_idx}...", terminal_app)
 
-            if not activate_whatsapp_and_verify(wa_app, 2.0):
+            if not activate_whatsapp_and_verify(wa_app, 3.0):
                 print("❌ Aborting Step E: WhatsApp could not be brought frontmost.")
                 summary["step_e"] = {"skipped": False, "chat_opened": False, "error": "Activation failed"}
                 return 1
@@ -650,7 +822,7 @@ def main() -> int:
         print("• Safety: Queries ROLE and SUBROLE ONLY. Never reads text, values, or names.")
         safe_input("👉 Press [Enter] to inspect focused element role...", terminal_app)
 
-        if activate_whatsapp_and_verify(wa_app, 2.0):
+        if activate_whatsapp_and_verify(wa_app, 3.0):
             time.sleep(0.1)
             err_f, focused_f = ApplicationServices.AXUIElementCopyAttributeValue(
                 app_el, ApplicationServices.kAXFocusedUIElementAttribute, None
