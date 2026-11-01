@@ -1,5 +1,5 @@
 """
-Privacy and Safety Audit Tests for WhatsApp Probe and Experiment Scripts.
+Privacy and Safety Audit Tests for WhatsApp Probe, Experiment, and Geometry Scripts.
 Verifies that scripts NEVER query content attributes (values, descriptions, help, labels, text),
 allow ONLY structural attributes (role, subrole, children, position, size, enabled, focused, windows, action names),
 never post non-whitelisted keycodes (especially Return keycode 36), and output files are gitignored.
@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PROBE_PATH = PROJECT_ROOT / "scripts" / "whatsapp_probe.py"
 EXPERIMENT_PATH = PROJECT_ROOT / "scripts" / "whatsapp_experiment.py"
 LAYOUT_PROBE_PATH = PROJECT_ROOT / "scripts" / "whatsapp_layout_probe.py"
+GEOMETRY_PATH = PROJECT_ROOT / "scripts" / "whatsapp_geometry.py"
 GITIGNORE_PATH = PROJECT_ROOT / ".gitignore"
 
 FORBIDDEN_CONTENT_ATTRIBUTES = [
@@ -120,9 +121,21 @@ def test_whatsapp_layout_probe_source_privacy():
     assert "kAXTitleAttribute" not in source
 
 
+def test_whatsapp_geometry_source_privacy():
+    """Verify whatsapp_geometry.py does not query forbidden content attributes."""
+    assert GEOMETRY_PATH.is_file(), f"Missing geometry script at {GEOMETRY_PATH}"
+    source = GEOMETRY_PATH.read_text(encoding="utf-8")
+
+    for attr in FORBIDDEN_CONTENT_ATTRIBUTES:
+        assert attr not in source, (
+            f"PRIVACY VIOLATION in whatsapp_geometry.py: Found reference to content attribute '{attr}'"
+        )
+    assert "kAXTitleAttribute" not in source
+
+
 def test_only_structural_attributes_queried():
-    """Verify that ONLY allowed structural attributes are queried in experiment and layout scripts."""
-    for script_path in [EXPERIMENT_PATH, LAYOUT_PROBE_PATH]:
+    """Verify that ONLY allowed structural attributes are queried in experiment, layout, and geometry scripts."""
+    for script_path in [EXPERIMENT_PATH, LAYOUT_PROBE_PATH, GEOMETRY_PATH]:
         queried = _extract_queried_attributes(script_path)
         assert queried, f"No AX attributes queried in {script_path.name}"
         for attr in queried:
@@ -137,7 +150,7 @@ def test_never_send_rule_across_whatsapp_scripts():
     NEVER-SEND RULE AUDIT:
     Verify scripts do NOT contain or post keycode 36 (kVK_Return / Enter).
     """
-    for script_path in [EXPERIMENT_PATH, LAYOUT_PROBE_PATH]:
+    for script_path in [EXPERIMENT_PATH, LAYOUT_PROBE_PATH, GEOMETRY_PATH]:
         source = script_path.read_text(encoding="utf-8")
         assert "36" not in source, (
             f"NEVER-SEND VIOLATION in {script_path.name}: Keycode 36 (kVK_Return) found!"
@@ -145,6 +158,40 @@ def test_never_send_rule_across_whatsapp_scripts():
         assert "kVK_Return" not in source, (
             f"NEVER-SEND VIOLATION in {script_path.name}: kVK_Return found!"
         )
+
+
+def test_axpress_call_sites_strictly_limited():
+    """
+    Verify AXPress is only ever called from:
+    1. Search-field step (target: search_field)
+    2. Step E row-press (target: target_button)
+    and nowhere else in whatsapp_experiment.py, and NEVER in geometry or probe scripts.
+    """
+    for script_path in [GEOMETRY_PATH, LAYOUT_PROBE_PATH]:
+        tree = ast.parse(script_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func_name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+                if func_name == "AXUIElementPerformAction":
+                    for arg in node.args:
+                        assert not (isinstance(arg, ast.Constant) and arg.value == "AXPress"), (
+                            f"AXPress cannot be performed in {script_path.name}"
+                        )
+
+    exp_tree = ast.parse(EXPERIMENT_PATH.read_text(encoding="utf-8"))
+    exp_press_calls = []
+    for node in ast.walk(exp_tree):
+        if isinstance(node, ast.Call):
+            func_name = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if func_name == "AXUIElementPerformAction":
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and arg.value == "AXPress":
+                        exp_press_calls.append(node)
+
+    assert len(exp_press_calls) == 2, f"Expected exactly 2 AXPress calls in experiment, found {len(exp_press_calls)}"
+    targets = [ast.unparse(c.args[0]) for c in exp_press_calls]
+    assert "search_field" in targets[0], f"First AXPress call must target search_field, got {targets[0]}"
+    assert "target_button" in targets[1], f"Second AXPress call must target target_button, got {targets[1]}"
 
 
 def test_gitignore_contains_probe_experiment_and_layout_patterns():

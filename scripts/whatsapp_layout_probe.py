@@ -4,7 +4,7 @@ WhatsApp Desktop Layout Probe (Read-Only & Structure-Only).
 Performs a breadth-first traversal over the WhatsApp main window to depth 15.
 Extracts structural & geometric properties (role, subrole, actions, position, size, enabled, focused)
 without reading any content attributes (no titles, values, descriptions, help, labels, or text).
-Saves details to whatsapp_layout.txt and prints geometry-based candidate analysis.
+Saves details to whatsapp_layout.txt and prints shared geometry-based candidate analysis.
 """
 
 from collections import deque
@@ -24,6 +24,9 @@ if venv_python.is_file() and sys.executable != str(venv_python):
     except Exception:
         pass
 
+# Include scripts directory in sys.path for shared modules
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+
 try:
     import ApplicationServices
     from AppKit import NSWorkspace
@@ -31,83 +34,16 @@ except ImportError as e:
     print(f"Error: Required macOS frameworks (PyObjC / ApplicationServices) not available: {e}")
     sys.exit(1)
 
+from whatsapp_geometry import (
+    enable_catalyst_accessibility,
+    extract_point,
+    extract_size,
+    find_chat_rows_geometry,
+    get_main_window,
+    get_sidebar_x_range,
+)
 
 WHATSAPP_BUNDLE_ID = "net.whatsapp.WhatsApp"
-
-
-def extract_point(ax_value: Any) -> Tuple[float, float]:
-    """Safely unpack CGPoint from an AXValueRef."""
-    if not ax_value:
-        return 0.0, 0.0
-    try:
-        ok, pt = ApplicationServices.AXValueGetValue(
-            ax_value, ApplicationServices.kAXValueTypeCGPoint, None
-        )
-        if ok and pt:
-            return float(pt.x), float(pt.y)
-    except Exception:
-        pass
-    return 0.0, 0.0
-
-
-def extract_size(ax_value: Any) -> Tuple[float, float]:
-    """Safely unpack CGSize from an AXValueRef."""
-    if not ax_value:
-        return 0.0, 0.0
-    try:
-        ok, sz = ApplicationServices.AXValueGetValue(
-            ax_value, ApplicationServices.kAXValueTypeCGSize, None
-        )
-        if ok and sz:
-            return float(sz.width), float(sz.height)
-    except Exception:
-        pass
-    return 0.0, 0.0
-
-
-def enable_catalyst_accessibility(app_element: Any) -> None:
-    """Set assistive flags on WhatsApp to populate UIKit accessibility tree."""
-    try:
-        ApplicationServices.AXUIElementSetAttributeValue(
-            app_element, "AXManualAccessibility", True
-        )
-    except Exception:
-        pass
-    try:
-        ApplicationServices.AXUIElementSetAttributeValue(
-            app_element, "AXEnhancedUserInterface", True
-        )
-    except Exception:
-        pass
-
-
-def get_main_window(app_element: Any) -> Optional[Any]:
-    """Find the WhatsApp main window element."""
-    err_m, main_win = ApplicationServices.AXUIElementCopyAttributeValue(
-        app_element, ApplicationServices.kAXMainWindowAttribute, None
-    )
-    if err_m == 0 and main_win:
-        return main_win
-
-    err_f, foc_win = ApplicationServices.AXUIElementCopyAttributeValue(
-        app_element, ApplicationServices.kAXFocusedWindowAttribute, None
-    )
-    if err_f == 0 and foc_win:
-        return foc_win
-
-    err_w, windows = ApplicationServices.AXUIElementCopyAttributeValue(
-        app_element, ApplicationServices.kAXWindowsAttribute, None
-    )
-    if err_w == 0 and windows:
-        for w in windows:
-            err_min, is_min = ApplicationServices.AXUIElementCopyAttributeValue(
-                w, ApplicationServices.kAXMinimizedAttribute, None
-            )
-            if not (err_min == 0 and is_min):
-                return w
-        return windows[0]
-
-    return None
 
 
 def main() -> int:
@@ -241,16 +177,16 @@ def main() -> int:
 
     # 6. Determine left sidebar x-range
     if search_field_info:
-        sf_x = search_field_info["x"]
-        sf_y = search_field_info["y"]
-        sf_w = search_field_info["w"]
-        sf_h = search_field_info["h"]
-        sidebar_x_min = win_x
-        sidebar_x_max = sf_x + sf_w + 25.0
+        sf_rect = (
+            search_field_info["x"],
+            search_field_info["y"],
+            search_field_info["w"],
+            search_field_info["h"],
+        )
     else:
-        sf_x, sf_y, sf_w, sf_h = (win_x + 20.0, win_y + 40.0, 300.0, 30.0)
-        sidebar_x_min = win_x
-        sidebar_x_max = win_x + 400.0
+        sf_rect = (win_x + 20.0, win_y + 40.0, 300.0, 30.0)
+
+    sidebar_x_min, sidebar_x_max = get_sidebar_x_range(main_win, sf_rect)
 
     # 7. Write layout dump to whatsapp_layout.txt
     layout_file = PROJECT_ROOT / "whatsapp_layout.txt"
@@ -281,57 +217,8 @@ def main() -> int:
     layout_file.write_text(layout_text, encoding="utf-8")
     print(f"• Layout details written to: {layout_file.name} (gitignored)")
 
-    # 8. Geometry-based candidate finder
-    # Search for elements supporting AXPress in sidebar below search field
-    sidebar_press_candidates = []
-    for e in elements:
-        if "AXPress" not in e["actions"]:
-            continue
-        # Below search field
-        if e["y"] < (sf_y + sf_h - 2.0):
-            continue
-        # Inside left sidebar bounds
-        if not (sidebar_x_min - 10.0 <= e["x"] and (e["x"] + e["w"]) <= sidebar_x_max + 30.0):
-            continue
-        # Filter reasonable chat row heights (e.g. 25px to 140px)
-        if 25.0 <= e["h"] <= 140.0 and e["w"] >= 150.0:
-            sidebar_press_candidates.append(e)
-
-    # Sort vertically
-    sidebar_press_candidates.sort(key=lambda item: item["y"])
-
-    # Classify candidate types: direct row vs button inside group wrapper
-    direct_rows = []
-    button_in_group = []
-    other_candidates = []
-
-    for c in sidebar_press_candidates:
-        p_idx = c["parent_index"]
-        parent = elements[p_idx - 1] if 1 <= p_idx <= len(elements) else None
-        p_role = parent["role"] if parent else "None"
-
-        if c["role"] == "AXButton" and p_role == "AXGroup":
-            button_in_group.append(c)
-        elif c["role"] in ("AXGroup", "AXRow", "AXCell"):
-            direct_rows.append(c)
-        else:
-            other_candidates.append(c)
-
-    # Trace scroll container holding candidates
-    scroll_containers: Dict[int, Dict[str, Any]] = {}
-    for c in sidebar_press_candidates:
-        curr = c
-        while curr and curr["parent_index"] > 0:
-            p_idx = curr["parent_index"]
-            parent = elements[p_idx - 1] if 1 <= p_idx <= len(elements) else None
-            if parent:
-                is_scroll = (
-                    "AXScrollDownByPage" in parent["actions"]
-                    or parent["role"] in ("AXScrollArea", "AXList", "AXTable")
-                )
-                if is_scroll:
-                    scroll_containers[parent["index"]] = parent
-            curr = parent
+    # 8. Geometry-based candidate finder via shared module
+    geo_data = find_chat_rows_geometry(main_win, sf_rect, max_depth=15)
 
     # 9. Print concise summary
     print("\n" + "=" * 70)
@@ -340,22 +227,33 @@ def main() -> int:
     print(f"• Total Elements Traversed:       {total_count}")
     print(f"• Total Elements with AXPress:    {press_count}")
     if search_field_info:
-        print(f"• Search Field Located:           pos=({sf_x:.1f}, {sf_y:.1f}) size=({sf_w:.1f}, {sf_h:.1f})")
+        print(f"• Search Field Located:           pos=({sf_rect[0]:.1f}, {sf_rect[1]:.1f}) size=({sf_rect[2]:.1f}, {sf_rect[3]:.1f})")
     else:
         print("• Search Field:                   Not detected via AXSearchField")
-    print(f"• Left Sidebar X-Range:           [{sidebar_x_min:.1f}, {sidebar_x_max:.1f}]")
-    print(f"• Geometry Chat Row Candidates:   {len(sidebar_press_candidates)}")
-    print(f"    - Direct AXPress Rows:        {len(direct_rows)}")
-    print(f"    - AXButton inside AXGroup:    {len(button_in_group)}")
-    print(f"    - Other AXPress in Sidebar:   {len(other_candidates)}")
+    print(f"• Left Sidebar X-Range:           [{geo_data['sidebar_x_range'][0]:.1f}, {geo_data['sidebar_x_range'][1]:.1f}]")
+    print(f"• AXGroup Row Wrappers Found:     {geo_data['wrappers_count']}")
+    print(f"• AXButton Row Children Found:    {geo_data['buttons_count']}")
+    print(f"• Row Pitch:                      {geo_data['row_pitch']:.1f} px")
 
+    scroll_containers = geo_data["scroll_containers"]
     if scroll_containers:
         print(f"• Holding Scroll Container(s) ({len(scroll_containers)} found):")
-        for sc in scroll_containers.values():
-            acts = ", ".join(sc["actions"]) if sc["actions"] else "None"
+        for sc in scroll_containers:
+            err_act, acts = ApplicationServices.AXUIElementCopyActionNames(sc, None)
+            acts_str = ", ".join(acts) if (err_act == 0 and acts) else "None"
+            err_r, role = ApplicationServices.AXUIElementCopyAttributeValue(
+                sc, ApplicationServices.kAXRoleAttribute, None
+            )
+            err_p, pos_val = ApplicationServices.AXUIElementCopyAttributeValue(
+                sc, ApplicationServices.kAXPositionAttribute, None
+            )
+            err_sz, sz_val = ApplicationServices.AXUIElementCopyAttributeValue(
+                sc, ApplicationServices.kAXSizeAttribute, None
+            )
+            sc_x, sc_y = extract_point(pos_val) if err_p == 0 else (0.0, 0.0)
+            sc_w, sc_h = extract_size(sz_val) if err_sz == 0 else (0.0, 0.0)
             print(
-                f"    #{sc['index']} [d={sc['depth']}] role={sc['role']} subrole={sc['subrole']} | "
-                f"pos=({sc['x']:.1f}, {sc['y']:.1f}) size=({sc['w']:.1f}, {sc['h']:.1f}) | actions=[{acts}]"
+                f"    role={role} pos=({sc_x:.1f}, {sc_y:.1f}) size=({sc_w:.1f}, {sc_h:.1f}) | actions=[{acts_str}]"
             )
     else:
         print("• Holding Scroll Container(s):    None directly detected in ancestor chain")

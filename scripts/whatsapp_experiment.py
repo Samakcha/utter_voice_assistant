@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
 """
-WhatsApp Desktop Controlled Interactive Experiment (Phase 0 - Revised).
+WhatsApp Desktop Controlled Interactive Experiment (Phase 0 - Geometry & Safety Edition).
 Tests search field focusing (AXPress vs Cmd+F), pre-paste focus guard (subrole AXSearchField only),
-live search filtering, search clearing via AXCancel, structural row identification,
+live search filtering, search clearing via AXCancel, geometry-based row identification,
 and post-selection focus role.
 
 CRITICAL SAFETY & PRIVACY RULES:
-1. FOCUS HANDBACK: Records Terminal at launch. After EVERY WhatsApp action, re-activates
-   Terminal and confirms it is frontmost BEFORE asking for Enter. Aborts if focus cannot
-   be handed back.
-2. DRAFT WARNING: Warns user before actions to ensure WhatsApp has no draft message.
-3. NEVER-SEND: Keycode whitelist is strictly {3 (Cmd+F), 9 (Cmd+V)}. Return/Enter is absent.
-4. AXCancel: Clears and dismisses search via AXCancel on the search field (no Delete/Cmd+A).
-5. STRUCTURE ONLY: Never reads, stores, or prints text, value, description, help,
-   label, or selected text content attributes from any window content or chat.
+1. STRICT APP ACTIVATION & FRONTMOST VERIFICATION:
+   Before every action step, activates WhatsApp, waits up to 2.0s until confirmed frontmost,
+   and aborts if not.
+   Immediately before posting ANY key, verifies frontmost is net.whatsapp.WhatsApp and prints
+   the frontmost bundle ID.
+2. FOCUS HANDBACK:
+   After every step, re-activates Terminal and confirms it is frontmost BEFORE printing any
+   prompt. Pressing Enter in Terminal can never reach WhatsApp.
+3. EXPLICIT INPUT:
+   Questions require explicit 'y' or 'n' input; blank input is rejected.
+4. NEVER-SEND:
+   Keycode whitelist is strictly {3 (Cmd+F), 9 (Cmd+V)}. Return/Enter is completely absent.
+5. GEOMETRY-BASED ROW TARGETING:
+   Rows are AXGroup wrappers (~550 wide, ~76 tall) in the sidebar with an AXButton child
+   supporting AXPress. Pressing acts on the child AXButton, not the wrapper.
+6. STRUCTURE ONLY:
+   Never reads, stores, or prints text, values, descriptions, help, labels, or content.
 """
 
 from collections import Counter, deque
@@ -33,6 +42,9 @@ if venv_python.is_file() and sys.executable != str(venv_python):
     except Exception:
         pass
 
+# Include scripts directory in sys.path for shared modules
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+
 try:
     import ApplicationServices
     from AppKit import NSPasteboard, NSPasteboardTypeString, NSRunningApplication, NSWorkspace
@@ -41,6 +53,15 @@ except ImportError as e:
     print(f"Error: Required macOS frameworks (PyObjC / Quartz) not available: {e}")
     sys.exit(1)
 
+from whatsapp_geometry import (
+    enable_catalyst_accessibility,
+    extract_point,
+    extract_size,
+    find_chat_rows_geometry,
+    find_search_field,
+    get_main_window,
+    get_sidebar_x_range,
+)
 
 WHATSAPP_BUNDLE_ID = "net.whatsapp.WhatsApp"
 
@@ -58,25 +79,40 @@ def get_whatsapp_app() -> Optional[NSRunningApplication]:
     return None
 
 
-def activate_whatsapp(app: NSRunningApplication) -> bool:
-    """Bring WhatsApp to the front and verify."""
+def activate_whatsapp_and_verify(app: NSRunningApplication, timeout_sec: float = 2.0) -> bool:
+    """
+    Activate WhatsApp and verify it is frontmost within timeout_sec.
+    Aborts the step if WhatsApp cannot be brought to the front.
+    """
+    ws = NSWorkspace.sharedWorkspace()
+    front = ws.frontmostApplication()
+    if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
+        return True
+
     app.activateWithOptions_(ApplicationServices.NSApplicationActivateIgnoringOtherApps)
-    for _ in range(30):
-        front = NSWorkspace.sharedWorkspace().frontmostApplication()
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        front = ws.frontmostApplication()
         if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
             return True
         time.sleep(0.05)
+
+    curr_front = ws.frontmostApplication()
+    curr_id = curr_front.bundleIdentifier() if curr_front else "None"
+    print(f"\n❌ ACTIVATION FAILED: WhatsApp did not become frontmost within {timeout_sec}s!")
+    print(f"   Current frontmost app is: {curr_id}")
     return False
 
 
-def handback_focus(terminal_app: NSRunningApplication) -> bool:
+def handback_focus(terminal_app: NSRunningApplication, timeout_sec: float = 2.0) -> bool:
     """
     CRITICAL SAFETY GUARD:
     Re-activate user's Terminal and verify it is frontmost before accepting input.
     Prevents user Enter from reaching WhatsApp.
     """
     terminal_app.activateWithOptions_(ApplicationServices.NSApplicationActivateIgnoringOtherApps)
-    for _ in range(30):
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
         front = NSWorkspace.sharedWorkspace().frontmostApplication()
         if front and front.processIdentifier() == terminal_app.processIdentifier():
             return True
@@ -93,6 +129,21 @@ def safe_input(prompt: str, terminal_app: NSRunningApplication) -> str:
     return input(prompt)
 
 
+def ask_yes_no(prompt: str, terminal_app: NSRunningApplication) -> bool:
+    """
+    Ask user a yes/no question in Terminal.
+    Requires explicit 'y', 'yes', 'n', or 'no'.
+    Rejects blank input (e.g. just pressing Enter) and prompts again.
+    """
+    while True:
+        raw = safe_input(prompt, terminal_app).strip().lower()
+        if raw in ("y", "yes"):
+            return True
+        elif raw in ("n", "no"):
+            return False
+        print("   ⚠️ Input required: please enter 'y' or 'n' (blank/Enter rejected).")
+
+
 def print_safety_warning() -> None:
     print("\n" + "-" * 70)
     print("⚠️  SAFETY CHECK:")
@@ -104,11 +155,22 @@ def print_safety_warning() -> None:
 def post_whitelisted_key(keycode: int, modifiers: int = 0) -> None:
     """
     Post a keyboard event strictly constrained to the whitelist {3, 9}.
-    Asserts at runtime that Return or non-whitelisted keys cannot be posted.
+    Immediately BEFORE posting, re-check that the frontmost app is net.whatsapp.WhatsApp
+    and print the frontmost bundle id. Aborts if not WhatsApp.
     """
     assert keycode in ALLOWED_EXPERIMENT_KEYCODES, (
         f"NEVER-SEND VIOLATION: Keycode {keycode} is not in whitelist {ALLOWED_EXPERIMENT_KEYCODES}"
     )
+
+    ws = NSWorkspace.sharedWorkspace()
+    front = ws.frontmostApplication()
+    front_bundle = front.bundleIdentifier() if front else "None"
+    print(f"• Pre-key frontmost verification: {front_bundle}")
+
+    if front_bundle != WHATSAPP_BUNDLE_ID:
+        raise RuntimeError(
+            f"SAFETY ABORT: Cannot post key event! Frontmost app is '{front_bundle}', not '{WHATSAPP_BUNDLE_ID}'."
+        )
 
     down = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
     up = Quartz.CGEventCreateKeyboardEvent(None, keycode, False)
@@ -120,340 +182,6 @@ def post_whitelisted_key(keycode: int, modifiers: int = 0) -> None:
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
     time.sleep(0.02)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
-
-
-def get_app_windows(app_element: Any) -> List[Any]:
-    """Retrieve candidate root windows, prioritizing main and focused windows."""
-    windows_list = []
-
-    err_m, main_win = ApplicationServices.AXUIElementCopyAttributeValue(
-        app_element, ApplicationServices.kAXMainWindowAttribute, None
-    )
-    if err_m == 0 and main_win:
-        windows_list.append(main_win)
-
-    err_f, foc_win = ApplicationServices.AXUIElementCopyAttributeValue(
-        app_element, ApplicationServices.kAXFocusedWindowAttribute, None
-    )
-    if err_f == 0 and foc_win:
-        if not any(foc_win == existing for existing in windows_list):
-            windows_list.append(foc_win)
-
-    err, windows = ApplicationServices.AXUIElementCopyAttributeValue(
-        app_element, ApplicationServices.kAXWindowsAttribute, None
-    )
-    if err == 0 and windows:
-        for w in windows:
-            if not any(w == existing for existing in windows_list):
-                windows_list.append(w)
-
-    if not windows_list:
-        err_c, children = ApplicationServices.AXUIElementCopyAttributeValue(
-            app_element, ApplicationServices.kAXChildrenAttribute, None
-        )
-        if err_c == 0 and children:
-            windows_list = list(children)
-
-    return windows_list
-
-
-def inspect_windows_metadata(windows: List[Any]) -> List[Dict[str, Any]]:
-    """Gather structure-only metadata for each window (no content attributes)."""
-    metas = []
-    for idx, win in enumerate(windows, 1):
-        err_r, role = ApplicationServices.AXUIElementCopyAttributeValue(
-            win, ApplicationServices.kAXRoleAttribute, None
-        )
-        err_s, subrole = ApplicationServices.AXUIElementCopyAttributeValue(
-            win, ApplicationServices.kAXSubroleAttribute, None
-        )
-        err_m, is_main = ApplicationServices.AXUIElementCopyAttributeValue(
-            win, ApplicationServices.kAXMainAttribute, None
-        )
-        err_min, is_minimized = ApplicationServices.AXUIElementCopyAttributeValue(
-            win, ApplicationServices.kAXMinimizedAttribute, None
-        )
-
-        metas.append({
-            "index": idx,
-            "role": str(role) if (err_r == 0 and role) else "Unknown",
-            "subrole": str(subrole) if (err_s == 0 and subrole) else "None",
-            "is_main": bool(err_m == 0 and is_main),
-            "is_minimized": bool(err_min == 0 and is_minimized),
-        })
-    return metas
-
-
-def enable_catalyst_accessibility(app_element: Any) -> None:
-    """
-    Set AXManualAccessibility and AXEnhancedUserInterface on the app element.
-    Mac Catalyst UIKit views are lazily populated in the AX tree until an assistive client sets these.
-    """
-    try:
-        ApplicationServices.AXUIElementSetAttributeValue(
-            app_element, "AXManualAccessibility", True
-        )
-    except Exception:
-        pass
-    try:
-        ApplicationServices.AXUIElementSetAttributeValue(
-            app_element, "AXEnhancedUserInterface", True
-        )
-    except Exception:
-        pass
-
-
-def find_search_field_bfs(
-    app_element: Any, max_depth: int = 15
-) -> Tuple[Optional[Any], Dict[str, Any]]:
-    """
-    Breadth-first search (BFS) across all application windows for the search field.
-    Matches:
-      - subrole == 'AXSearchField' with role in ('AXStaticText', 'AXTextField', 'AXSearchField')
-      - or role == 'AXSearchField'
-    Collects structure-only diagnostics:
-      - max depth reached
-      - role histogram
-      - subrole histogram
-      - windows metadata
-    Never queries or stores content attributes.
-    """
-    windows = get_app_windows(app_element)
-    win_metas = inspect_windows_metadata(windows)
-
-    role_counts: Counter = Counter()
-    subrole_counts: Counter = Counter()
-    max_depth_reached = 1 if windows else 0
-    search_field = None
-
-    queue = deque()
-    for w in windows:
-        queue.append((w, 1))
-
-    while queue:
-        el, depth = queue.popleft()
-        if depth > max_depth_reached:
-            max_depth_reached = depth
-
-        err_r, role = ApplicationServices.AXUIElementCopyAttributeValue(
-            el, ApplicationServices.kAXRoleAttribute, None
-        )
-        err_s, subrole = ApplicationServices.AXUIElementCopyAttributeValue(
-            el, ApplicationServices.kAXSubroleAttribute, None
-        )
-
-        role_str = str(role) if (err_r == 0 and role) else "Unknown"
-        subrole_str = str(subrole) if (err_s == 0 and subrole) else "None"
-
-        role_counts[role_str] += 1
-        subrole_counts[subrole_str] += 1
-
-        if search_field is None:
-            is_subrole_match = (
-                (subrole_str == "AXSearchField" or "SearchField" in subrole_str)
-                and role_str in ("AXStaticText", "AXTextField", "AXSearchField")
-            )
-            is_role_match = (role_str == "AXSearchField")
-            if is_subrole_match or is_role_match:
-                search_field = el
-                break
-
-        if depth < max_depth:
-            err_c, children = ApplicationServices.AXUIElementCopyAttributeValue(
-                el, ApplicationServices.kAXChildrenAttribute, None
-            )
-            if err_c == 0 and children:
-                for child in children:
-                    queue.append((child, depth + 1))
-
-    diag = {
-        "windows": win_metas,
-        "max_depth_reached": max_depth_reached,
-        "role_counts": role_counts,
-        "subrole_counts": subrole_counts,
-    }
-    return search_field, diag
-
-
-def find_chat_list_container_bfs(app_element: Any, max_depth: int = 15) -> Optional[Any]:
-    """Locate the scrollable chat list container element using BFS across all windows."""
-    windows = get_app_windows(app_element)
-    queue = deque()
-    for w in windows:
-        queue.append((w, 1))
-
-    while queue:
-        el, depth = queue.popleft()
-
-        err_r, role = ApplicationServices.AXUIElementCopyAttributeValue(
-            el, ApplicationServices.kAXRoleAttribute, None
-        )
-        err_act, actions = ApplicationServices.AXUIElementCopyActionNames(el, None)
-        actions_list = list(actions) if (err_act == 0 and actions) else []
-
-        err_c, children = ApplicationServices.AXUIElementCopyAttributeValue(
-            el, ApplicationServices.kAXChildrenAttribute, None
-        )
-        children_list = list(children) if (err_c == 0 and children) else []
-        count = len(children_list)
-
-        role_str = str(role) if (err_r == 0 and role) else ""
-
-        # Catalyst chat list is a container with scroll actions and children
-        if (role_str in ("AXList", "AXTable", "AXOutline") or "AXScrollDownByPage" in actions_list) and count > 0:
-            return el
-
-        if depth < max_depth and children_list:
-            for child in children_list:
-                queue.append((child, depth + 1))
-
-    return None
-
-
-def format_diagnostic_report(
-    is_trusted: bool,
-    windows_info: List[Dict[str, Any]],
-    max_depth_reached: int,
-    role_counts: Counter,
-    subrole_counts: Counter,
-    catalyst_flags_attempted: bool,
-) -> str:
-    lines = [
-        "=" * 70,
-        "WHATSAPP ACCESSIBILITY STRUCTURE DIAGNOSTIC (SEARCH FIELD NOT FOUND)",
-        f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "=" * 70,
-        f"• Process Accessibility Trusted (AXIsProcessTrusted): {is_trusted}",
-        f"• Mac Catalyst Assistive Flags Set: {catalyst_flags_attempted}",
-        f"• Total Windows Detected: {len(windows_info)}",
-    ]
-    if windows_info:
-        lines.append("  Window Details:")
-        for w in windows_info:
-            lines.append(
-                f"    - Window #{w['index']}: Role={w['role']}, Subrole={w['subrole']}, Main={w['is_main']}, Minimized={w['is_minimized']}"
-            )
-    else:
-        lines.append("  No accessible windows returned by kAXWindowsAttribute or kAXChildrenAttribute.")
-
-    lines.append(f"• Tree Depth Reached: {max_depth_reached}")
-
-    lines.append("\n• Role Histogram (Count):")
-    if role_counts:
-        for r, c in role_counts.most_common():
-            lines.append(f"    {r}: {c}")
-    else:
-        lines.append("    (No elements traversed)")
-
-    lines.append("\n• Subrole Histogram (Count):")
-    if subrole_counts:
-        for sr, c in subrole_counts.most_common():
-            lines.append(f"    {sr}: {c}")
-    else:
-        lines.append("    (No subroles found)")
-
-    lines.append("=" * 70)
-    return "\n".join(lines)
-
-
-def audit_container_children(container: Any) -> Tuple[int, List[Any], List[Dict[str, Any]]]:
-    """
-    Audit children of container using STRUCTURE ONLY.
-    Returns: (total_children, accepted_rows, list_of_excluded_child_metadata)
-    NEVER reads or prints any text or content attributes.
-    """
-    err, children = ApplicationServices.AXUIElementCopyAttributeValue(
-        container, ApplicationServices.kAXChildrenAttribute, None
-    )
-    if err != 0 or not children:
-        return 0, [], []
-
-    total_count = len(children)
-    accepted = []
-    excluded = []
-
-    for i, child in enumerate(children):
-        err_r, role = ApplicationServices.AXUIElementCopyAttributeValue(
-            child, ApplicationServices.kAXRoleAttribute, None
-        )
-        err_sub, subrole = ApplicationServices.AXUIElementCopyAttributeValue(
-            child, ApplicationServices.kAXSubroleAttribute, None
-        )
-        err_act, actions = ApplicationServices.AXUIElementCopyActionNames(child, None)
-        err_c, sub_children = ApplicationServices.AXUIElementCopyAttributeValue(
-            child, ApplicationServices.kAXChildrenAttribute, None
-        )
-
-        role_str = str(role) if err_r == 0 and role else "Unknown"
-        subrole_str = str(subrole) if err_sub == 0 and subrole else "None"
-        actions_list = list(actions) if err_act == 0 and actions else []
-        child_count = len(sub_children) if err_c == 0 and sub_children else 0
-
-        is_header = role_str in ("AXHeading", "AXScrollBar", "AXSplitter") or ("Header" in subrole_str)
-        has_press = "AXPress" in actions_list
-        has_structure = child_count > 0 or role_str == "AXRow"
-
-        if (not is_header) and has_press and has_structure:
-            accepted.append(child)
-        else:
-            excluded.append({
-                "index": i + 1,
-                "role": role_str,
-                "subrole": subrole_str,
-                "child_count": child_count,
-                "actions": actions_list,
-                "reason": "Header" if is_header else ("No AXPress" if not has_press else "No child subviews"),
-            })
-
-    return total_count, accepted, excluded
-
-
-def build_summary_text(summary: Dict[str, Any]) -> str:
-    """Format structure-only summary of the experiment."""
-    lines = [
-        "=" * 70,
-        "WHATSAPP EXPERIMENT STRUCTURE-ONLY SUMMARY",
-        f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        "=" * 70,
-        f"Mac Catalyst Flags Needed:         {'YES' if summary.get('catalyst_flags_needed') else 'NO'}",
-        f"Windows Count:                     {summary.get('windows_count', 1)}",
-        f"Tree Depth Reached:                {summary.get('max_depth_reached', 0)}",
-    ]
-    if "step_a" in summary:
-        s_a = summary["step_a"]
-        lines.append(
-            f"Step A (AXPress Search Focus):    {'PASS' if s_a.get('search_field_focused') else 'FAIL'} | Role: {s_a.get('focused_role')} | Subrole: {s_a.get('focused_subrole')} | Cursor in box: {'YES' if s_a.get('cursor_in_search_box') else 'NO'}"
-        )
-    if "step_c" in summary:
-        s_c = summary["step_c"]
-        lines.append(
-            f"Step C (Pre-Paste Guard & Paste): {'PASS' if s_c.get('guard_passed') else 'BLOCKED'} | 'Alex Test' in box: {'YES' if s_c.get('alex_test_in_search_box') else 'NO'} | Chat filtered: {'YES' if s_c.get('chat_list_filtered') else 'NO'} | Rows: {s_c.get('filtered_accepted_rows', 0)}"
-        )
-    if "step_d" in summary:
-        s_d = summary["step_d"]
-        lines.append(
-            f"Step D (AXCancel Clear Search):   {'PASS' if s_d.get('returned_full_list') else 'FAIL'} | Box emptied & returned: {'YES' if s_d.get('search_box_emptied_and_list_returned') else 'NO'} | Rows: {s_d.get('rows_after_cancel')}/{s_d.get('baseline_rows')}"
-        )
-    if "step_b" in summary:
-        s_b = summary["step_b"]
-        lines.append(
-            f"Step B (Cmd+F from Unfocused):    {'PASS' if s_b.get('search_field_focused') else 'FAIL'} | Role: {s_b.get('focused_role')} | Subrole: {s_b.get('focused_subrole')} | Cursor in box: {'YES' if s_b.get('cursor_in_search_box') else 'NO'}"
-        )
-    if "step_e" in summary:
-        s_e = summary["step_e"]
-        if s_e.get("skipped"):
-            lines.append(f"Step E (AXPress Row Selection):   SKIPPED ({s_e.get('reason')})")
-        else:
-            lines.append(
-                f"Step E (AXPress Row Selection):   {'PASS' if s_e.get('chat_opened') else 'FAIL'} | Row #{s_e.get('row_index')}"
-            )
-    if "step_f" in summary:
-        s_f = summary["step_f"]
-        lines.append(
-            f"Step F (Post-Open Focus Role):    Role: {s_f.get('focused_role')} | Subrole: {s_f.get('focused_subrole')}"
-        )
-    lines.append("=" * 70)
-    return "\n".join(lines)
 
 
 def check_is_focused(element: Any, app_element: Any) -> Tuple[bool, str, str]:
@@ -483,9 +211,63 @@ def check_is_focused(element: Any, app_element: Any) -> Tuple[bool, str, str]:
     return focused_bool, f_role, f_subrole
 
 
+def build_summary_text(summary: Dict[str, Any]) -> str:
+    """Format structure-only summary of the experiment."""
+    lines = [
+        "=" * 70,
+        "WHATSAPP EXPERIMENT STRUCTURE-ONLY SUMMARY",
+        f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "=" * 70,
+        f"Mac Catalyst Flags Needed:         {'YES' if summary.get('catalyst_flags_needed') else 'NO'}",
+        f"Search Field Located:              {'YES' if summary.get('search_field_found') else 'NO'}",
+        f"Initial Row Wrappers:              {summary.get('initial_wrappers_count', 0)}",
+        f"Initial Selectable Buttons:        {summary.get('initial_buttons_count', 0)}",
+        f"Row Pitch:                         {summary.get('row_pitch', 0.0):.1f} px",
+    ]
+    if "step_a" in summary:
+        s_a = summary["step_a"]
+        lines.append(
+            f"Step A (AXPress Search Focus):    {'PASS' if s_a.get('search_field_focused') else 'FAIL'} | Role: {s_a.get('focused_role')} | Subrole: {s_a.get('focused_subrole')} | Cursor in box: {'YES' if s_a.get('cursor_in_search_box') else 'NO'}"
+        )
+    if "step_c" in summary:
+        s_c = summary["step_c"]
+        lines.append(
+            f"Step C (Pre-Paste Guard & Paste): {'PASS' if s_c.get('guard_passed') else 'BLOCKED'} | 'Alex Test' in box: {'YES' if s_c.get('alex_test_in_search_box') else 'NO'} | Chat filtered: {'YES' if s_c.get('chat_list_filtered') else 'NO'} | Rows: {s_c.get('filtered_buttons_count', 0)}"
+        )
+    if "step_d" in summary:
+        s_d = summary["step_d"]
+        lines.append(
+            f"Step D (AXCancel Clear Search):   {'PASS' if s_d.get('returned_full_list') else 'FAIL'} | Box emptied & returned: {'YES' if s_d.get('search_box_emptied_and_list_returned') else 'NO'} | Restored Rows: {s_d.get('rows_after_cancel')}/{s_d.get('baseline_rows')}"
+        )
+    if "step_b" in summary:
+        s_b = summary["step_b"]
+        status = s_b.get("status", "UNKNOWN")
+        if status == "inconclusive":
+            lines.append(f"Step B (Cmd+F from Unfocused):    INCONCLUSIVE ({s_b.get('reason')})")
+        else:
+            lines.append(
+                f"Step B (Cmd+F from Unfocused):    {status} | Role: {s_b.get('focused_role')} | Subrole: {s_b.get('focused_subrole')} | Cursor in box: {'YES' if s_b.get('cursor_in_search_box') else 'NO'}"
+            )
+    if "step_e" in summary:
+        s_e = summary["step_e"]
+        if s_e.get("skipped"):
+            lines.append(f"Step E (Geometry Row Selection):  SKIPPED ({s_e.get('reason')})")
+        else:
+            lines.append(
+                f"Step E (Geometry Row Selection):  {'PASS' if s_e.get('chat_opened') else 'FAIL'} | Row #{s_e.get('row_index')} | Focused: {s_e.get('focused_role')}/{s_e.get('focused_subrole')}"
+            )
+    if "step_f" in summary:
+        s_f = summary["step_f"]
+        lines.append(
+            f"Step F (Post-Open Focus Role):    Role: {s_f.get('focused_role')} | Subrole: {s_f.get('focused_subrole')}"
+        )
+    lines.append("=" * 70)
+    return "\n".join(lines)
+
+
 def main() -> int:
     print("\n" + "=" * 70)
-    print("WHATSAPP CONTROLLED INTERACTIVE EXPERIMENT (PHASE 0 - REVISED)")
+    print("WHATSAPP CONTROLLED INTERACTIVE EXPERIMENT (GEOMETRY & SAFETY EDITION)")
     print("=" * 70)
 
     # 1. Capture user's Terminal application for Focus Handback
@@ -512,94 +294,51 @@ def main() -> int:
     if not is_trusted:
         print("  ⚠️ WARNING: AXIsProcessTrusted() is False. Terminal may require Accessibility permission in System Settings.")
 
-    print("• Scanning WhatsApp UI tree (BFS traversal across all windows, max depth 15)...")
-    search_field, diag = find_search_field_bfs(app_el, max_depth=15)
-    catalyst_needed = False
+    # 3. Enable Mac Catalyst assistive flags
+    print("• Setting Mac Catalyst assistive flags (AXManualAccessibility & AXEnhancedUserInterface)...")
+    enable_catalyst_accessibility(app_el)
+    time.sleep(1.0)
 
+    # 4. Find Main Window and Search Field
+    main_win = get_main_window(app_el)
+    if not main_win:
+        print("❌ Could not locate WhatsApp main window.")
+        return 1
+
+    search_field, sf_rect = find_search_field(main_win, max_depth=15)
+    catalyst_needed = False
     if not search_field:
-        print("• Search field not found on initial pass.")
-        print("• Setting Mac Catalyst assistive flags (AXManualAccessibility & AXEnhancedUserInterface)...")
+        print("• Search field not found on initial pass. Retrying after delay...")
         enable_catalyst_accessibility(app_el)
-        print("• Waiting 1.0s for Mac Catalyst UIKit tree to instantiate...")
         time.sleep(1.0)
-        search_field, diag = find_search_field_bfs(app_el, max_depth=15)
+        search_field, sf_rect = find_search_field(main_win, max_depth=15)
         if search_field:
             catalyst_needed = True
-            print("• SUCCESS: Search field located after enabling Mac Catalyst assistive flags!")
 
     if not search_field:
-        print("\n❌ Could not locate search field in WhatsApp window tree (even after Mac Catalyst flags).")
-        diag_report = format_diagnostic_report(
-            is_trusted=is_trusted,
-            windows_info=diag["windows"],
-            max_depth_reached=diag["max_depth_reached"],
-            role_counts=diag["role_counts"],
-            subrole_counts=diag["subrole_counts"],
-            catalyst_flags_attempted=True,
-        )
-        print("\n" + diag_report + "\n")
-
-        summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
-        try:
-            summary_file.write_text(diag_report, encoding="utf-8")
-            print(f"Diagnostic report written to: {summary_file.name} (gitignored)")
-        except Exception as e:
-            print(f"Could not write summary file: {e}")
-
-        print("\n👉 Please copy and paste the diagnostic summary above into the chat.")
+        print("❌ Could not locate search field in WhatsApp window tree.")
         return 1
 
-    container = find_chat_list_container_bfs(app_el, max_depth=15)
-    if not container:
-        if not catalyst_needed:
-            print("• Chat container not found on initial pass. Enabling Mac Catalyst assistive flags...")
-            enable_catalyst_accessibility(app_el)
-            time.sleep(1.0)
-            container = find_chat_list_container_bfs(app_el, max_depth=15)
-            if container:
-                catalyst_needed = True
-                print("• SUCCESS: Chat container located after enabling Mac Catalyst assistive flags!")
+    sf_x, sf_y, sf_w, sf_h = sf_rect
+    print(f"• Located Search Field: pos=({sf_x:.1f}, {sf_y:.1f}) size=({sf_w:.1f}, {sf_h:.1f})")
 
-    if not container:
-        print("\n❌ Could not locate chat list container in WhatsApp window tree.")
-        diag_report = format_diagnostic_report(
-            is_trusted=is_trusted,
-            windows_info=diag["windows"],
-            max_depth_reached=diag["max_depth_reached"],
-            role_counts=diag["role_counts"],
-            subrole_counts=diag["subrole_counts"],
-            catalyst_flags_attempted=True,
-        )
-        print("\n" + diag_report + "\n")
-
-        summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
-        try:
-            summary_file.write_text(diag_report, encoding="utf-8")
-            print(f"Diagnostic report written to: {summary_file.name} (gitignored)")
-        except Exception as e:
-            print(f"Could not write summary file: {e}")
-
-        print("\n👉 Please copy and paste the diagnostic summary above into the chat.")
-        return 1
-
-    print(f"• Located Search Field and Chat List Container. (Mac Catalyst flags needed: {'YES' if catalyst_needed else 'NO'})")
+    # 5. Baseline Geometry Inspection for Chat Rows
+    base_geo = find_chat_rows_geometry(main_win, sf_rect)
+    print("\n[Baseline Chat List Geometry]")
+    print(f"• AXGroup Wrappers Found:      {base_geo['wrappers_count']}")
+    print(f"• AXButton Row Children Found: {base_geo['buttons_count']}")
+    print(f"• Left Sidebar X-Range:         [{base_geo['sidebar_x_range'][0]:.1f}, {base_geo['sidebar_x_range'][1]:.1f}]")
+    print(f"• Row Pitch:                   {base_geo['row_pitch']:.1f} px")
 
     summary: Dict[str, Any] = {
         "catalyst_flags_needed": catalyst_needed,
-        "windows_count": len(diag["windows"]),
-        "max_depth_reached": diag["max_depth_reached"],
+        "search_field_found": True,
+        "initial_wrappers_count": base_geo["wrappers_count"],
+        "initial_buttons_count": base_geo["buttons_count"],
+        "row_pitch": base_geo["row_pitch"],
     }
 
-    # Initial baseline container audit
-    tot_base, rows_base, excl_base = audit_container_children(container)
-    print(f"\n[Baseline Normal Chat List Audit]")
-    print(f"• Total Children in Container:   {tot_base}")
-    print(f"• Filter-Accepted Chat Rows:     {len(rows_base)}")
-    print(f"• Filter-Excluded Children:      {len(excl_base)}")
-    if excl_base:
-        print("  Excluded child structure (index | role | subrole | children | reason):")
-        for ex in excl_base:
-            print(f"    #{ex['index']}: {ex['role']} (subrole: {ex['subrole']}, children: {ex['child_count']}) -> {ex['reason']}")
+    summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
 
     try:
         # -------------------------------------------------------------
@@ -613,7 +352,11 @@ def main() -> int:
         print("• Safety: Zero keystrokes posted.")
         safe_input("👉 Press [Enter] to execute Step A...", terminal_app)
 
-        activate_whatsapp(wa_app)
+        if not activate_whatsapp_and_verify(wa_app, 2.0):
+            print("❌ Aborting Step A: WhatsApp could not be brought frontmost.")
+            summary["step_a"] = {"search_field_focused": False, "error": "Activation failed"}
+            return 1
+
         err_a = ApplicationServices.AXUIElementPerformAction(search_field, "AXPress")
         time.sleep(0.2)
         is_foc_a, role_a, subrole_a = check_is_focused(search_field, app_el)
@@ -624,14 +367,15 @@ def main() -> int:
         print(f"• Focused Element Role:      {role_a}")
         print(f"• Focused Element Subrole:   {subrole_a}")
         print(f"• Matches 'AXSearchField':   {subrole_a == 'AXSearchField'}")
-        ans_a = safe_input("👀 Look at WhatsApp: Is the cursor in the search box? [y/n]: ", terminal_app).strip().lower()
+
+        ans_a = ask_yes_no("👀 Look at WhatsApp: Is the cursor in the search box? [y/n]: ", terminal_app)
         summary["step_a"] = {
             "action": "AXPress on search field",
             "search_field_focused": is_foc_a,
             "focused_role": role_a,
             "focused_subrole": subrole_a,
             "matches_guard": subrole_a == "AXSearchField",
-            "cursor_in_search_box": ans_a.startswith("y"),
+            "cursor_in_search_box": ans_a,
         }
 
         # -------------------------------------------------------------
@@ -645,20 +389,20 @@ def main() -> int:
         print("• Action: Paste 'Alex Test' via Cmd+V (keycode 9 with Command flag) and restore clipboard.")
         safe_input("👉 Press [Enter] to execute Step C...", terminal_app)
 
-        activate_whatsapp(wa_app)
-        is_foc_c, role_c, subrole_c = check_is_focused(search_field, app_el)
+        if not activate_whatsapp_and_verify(wa_app, 2.0):
+            print("❌ Aborting Step C: WhatsApp could not be brought frontmost.")
+            summary["step_c"] = {"guard_passed": False, "pasted": False, "error": "Activation failed"}
+            return 1
 
+        is_foc_c, role_c, subrole_c = check_is_focused(search_field, app_el)
         guard_passed = (subrole_c == "AXSearchField")
-        tot_after_c = 0
-        accepted_after_c: List[Any] = []
-        excl_after_c: List[Dict[str, Any]] = []
 
         if not guard_passed:
             handback_focus(terminal_app)
             print(f"\n❌ FOCUS GUARD BLOCKED PASTE: Focused subrole is '{subrole_c}' != 'AXSearchField'.")
             summary["step_c"] = {"guard_passed": False, "pasted": False}
         else:
-            tot_pre, accepted_pre, _ = audit_container_children(container)
+            geo_pre = find_chat_rows_geometry(main_win, sf_rect)
 
             pb = NSPasteboard.generalPasteboard()
             orig_text = pb.stringForType_(NSPasteboardTypeString)
@@ -673,7 +417,7 @@ def main() -> int:
                 post_whitelisted_key(9, Quartz.kCGEventFlagMaskCommand)
                 time.sleep(0.4)  # Allow search filter to populate
 
-                tot_after_c, accepted_after_c, excl_after_c = audit_container_children(container)
+                geo_post = find_chat_rows_geometry(main_win, sf_rect)
             finally:
                 pb.clearContents()
                 if orig_text is not None:
@@ -683,26 +427,18 @@ def main() -> int:
 
             print(f"\n[Step C Result]")
             print(f"• Focus Guard Passed:        {guard_passed}")
-            print(f"• Pre-Paste Rows Count:      {len(accepted_pre)}")
-            print(f"• Filtered Total Children:   {tot_after_c}")
-            print(f"• Filtered Accepted Rows:    {len(accepted_after_c)}")
-            print(f"• Filtered Excluded Items:   {len(excl_after_c)}")
-            if excl_after_c:
-                print("  Excluded items during search (sections/headers):")
-                for ex in excl_after_c:
-                    print(f"    #{ex['index']}: {ex['role']} (subrole: {ex['subrole']}) -> {ex['reason']}")
+            print(f"• Pre-Paste Row Buttons:     {geo_pre['buttons_count']}")
+            print(f"• Filtered Row Buttons:      {geo_post['buttons_count']}")
 
-            ans_c1 = safe_input("👀 Look at WhatsApp: Did 'Alex Test' appear in the search box? [y/n]: ", terminal_app).strip().lower()
-            ans_c2 = safe_input("👀 Look at WhatsApp: Did the chat list filter? [y/n]: ", terminal_app).strip().lower()
+            ans_c1 = ask_yes_no("👀 Look at WhatsApp: Did 'Alex Test' appear in the search box? [y/n]: ", terminal_app)
+            ans_c2 = ask_yes_no("👀 Look at WhatsApp: Did the chat list filter? [y/n]: ", terminal_app)
             summary["step_c"] = {
                 "guard_passed": True,
                 "pasted": True,
-                "pre_rows": len(accepted_pre),
-                "filtered_total": tot_after_c,
-                "filtered_accepted_rows": len(accepted_after_c),
-                "filtered_excluded": len(excl_after_c),
-                "alex_test_in_search_box": ans_c1.startswith("y"),
-                "chat_list_filtered": ans_c2.startswith("y"),
+                "pre_buttons_count": geo_pre["buttons_count"],
+                "filtered_buttons_count": geo_post["buttons_count"],
+                "alex_test_in_search_box": ans_c1,
+                "chat_list_filtered": ans_c2,
             }
 
         # -------------------------------------------------------------
@@ -717,108 +453,191 @@ def main() -> int:
         print("• Goal:   Verify if AXCancel restores the full chat list count.")
         safe_input("👉 Press [Enter] to execute Step D...", terminal_app)
 
-        activate_whatsapp(wa_app)
+        if not activate_whatsapp_and_verify(wa_app, 2.0):
+            print("❌ Aborting Step D: WhatsApp could not be brought frontmost.")
+            summary["step_d"] = {"returned_full_list": False, "error": "Activation failed"}
+            return 1
+
         err_d = ApplicationServices.AXUIElementPerformAction(search_field, "AXCancel")
         time.sleep(0.4)
-        tot_d, accepted_d, _ = audit_container_children(container)
+        geo_cancel = find_chat_rows_geometry(main_win, sf_rect)
+        is_foc_after_d, _, _ = check_is_focused(search_field, app_el)
         handback_focus(terminal_app)
 
-        returned_full = (len(accepted_d) == len(rows_base))
+        returned_full = (geo_cancel["buttons_count"] == base_geo["buttons_count"])
         print(f"\n[Step D Result]")
         print(f"• AXCancel Call Return:      {'SUCCESS (0)' if err_d == 0 else f'ERROR ({err_d})'}")
-        print(f"• Rows After AXCancel:       {len(accepted_d)} (Baseline was {len(rows_base)})")
+        print(f"• Rows After AXCancel:       {geo_cancel['buttons_count']} (Baseline was {base_geo['buttons_count']})")
         print(f"• Restored Full Chat List:   {'YES' if returned_full else 'NO'}")
+        print(f"• Search Field Still Focused:{is_foc_after_d}")
 
-        ans_d = safe_input("👀 Look at WhatsApp: Did the search box empty and the full list return? [y/n]: ", terminal_app).strip().lower()
+        ans_d = ask_yes_no("👀 Look at WhatsApp: Did the search box empty and the full list return? [y/n]: ", terminal_app)
         summary["step_d"] = {
             "action": "AXCancel on search field",
             "returned_full_list": returned_full,
-            "rows_after_cancel": len(accepted_d),
-            "baseline_rows": len(rows_base),
-            "search_box_emptied_and_list_returned": ans_d.startswith("y"),
+            "rows_after_cancel": geo_cancel["buttons_count"],
+            "baseline_rows": base_geo["buttons_count"],
+            "search_field_still_focused": is_foc_after_d,
+            "search_box_emptied_and_list_returned": ans_d,
         }
 
         # -------------------------------------------------------------
-        # STEP B: Focus Search Field via Cmd+F from Unfocused State (After AXCancel)
+        # STEP B: Focus Search Field via Cmd+F (From Verified Unfocused State)
         # -------------------------------------------------------------
         print("\n" + "=" * 70)
-        print("STEP B: Focus Search Field via Cmd+F (From Unfocused State)")
-        print("=" * 70)
-        print_safety_warning()
-        print("• Action: Post Cmd+F (keycode 3 with Command modifier) after AXCancel dismissed search.")
-        print("• Safety: Whitelisted keycode only; no Return.")
-        safe_input("👉 Press [Enter] to execute Step B (Cmd+F from unfocused state)...", terminal_app)
-
-        activate_whatsapp(wa_app)
-        post_whitelisted_key(3, Quartz.kCGEventFlagMaskCommand)
-        time.sleep(0.25)
-        is_foc_b, role_b, subrole_b = check_is_focused(search_field, app_el)
-        handback_focus(terminal_app)
-
-        print(f"\n[Step B Result]")
-        print(f"• Search Field Focused:      {is_foc_b}")
-        print(f"• Focused Element Role:      {role_b}")
-        print(f"• Focused Element Subrole:   {subrole_b}")
-        print(f"• Matches 'AXSearchField':   {subrole_b == 'AXSearchField'}")
-        ans_b = safe_input("👀 Look at WhatsApp: Is the cursor in the search box after Cmd+F? [y/n]: ", terminal_app).strip().lower()
-        summary["step_b"] = {
-            "action": "Cmd+F from unfocused state",
-            "search_field_focused": is_foc_b,
-            "focused_role": role_b,
-            "focused_subrole": subrole_b,
-            "matches_guard": subrole_b == "AXSearchField",
-            "cursor_in_search_box": ans_b.startswith("y"),
-        }
-
-        # Dismiss search again with AXCancel to leave clean state for Step E
-        activate_whatsapp(wa_app)
-        ApplicationServices.AXUIElementPerformAction(search_field, "AXCancel")
-        time.sleep(0.2)
-        handback_focus(terminal_app)
-
-        # -------------------------------------------------------------
-        # STEP E: Select Row N via AXPress Action
-        # -------------------------------------------------------------
-        print("\n" + "=" * 70)
-        print("STEP E: Select Row N via AXPress Action (Zero Keystrokes, NO Return)")
+        print("STEP B: Focus Search Field via Cmd+F (From Verified Unfocused State)")
         print("=" * 70)
         print_safety_warning()
 
-        current_tot, current_accepted, _ = audit_container_children(container)
-        print(f"• Current selectable chat rows: {len(current_accepted)}")
+        is_foc_before_b, _, _ = check_is_focused(search_field, app_el)
+        print(f"• Search field AX-focused after AXCancel: {is_foc_before_b}")
 
-        if len(current_accepted) == 0:
-            print("⚠️ SKIPPING Step E: 0 selectable chat rows detected in container.")
-            print("   (The probed container had 0 interactive row children).")
+        proceed_with_cmdf = True
+        if is_foc_before_b:
+            print("• Search field is still AX-focused after AXCancel.")
+            print("👉 Click the Chats tab in WhatsApp with your mouse, then click back on Terminal and press Enter.")
+            safe_input("Press [Enter] after clicking Chats tab in WhatsApp...", terminal_app)
+            is_foc_recheck, _, _ = check_is_focused(search_field, app_el)
+            print(f"• Re-checked focus: search field focused = {is_foc_recheck}")
+            if is_foc_recheck:
+                print("⚠️ Search field is still focused after manual click. Marking Step B INCONCLUSIVE.")
+                summary["step_b"] = {
+                    "status": "inconclusive",
+                    "reason": "Search field remained focused after AXCancel and manual click",
+                }
+                proceed_with_cmdf = False
+
+        if proceed_with_cmdf:
+            print("• Action: Post Cmd+F (keycode 3 with Command modifier) from confirmed unfocused state.")
+            print("• Safety: Whitelisted keycode only; no Return.")
+            safe_input("👉 Press [Enter] to execute Step B (Cmd+F from unfocused state)...", terminal_app)
+
+            if not activate_whatsapp_and_verify(wa_app, 2.0):
+                print("❌ Aborting Step B: WhatsApp could not be brought frontmost.")
+                summary["step_b"] = {"status": "FAIL", "error": "Activation failed"}
+                return 1
+
+            post_whitelisted_key(3, Quartz.kCGEventFlagMaskCommand)
+            time.sleep(0.25)
+            is_foc_b, role_b, subrole_b = check_is_focused(search_field, app_el)
+            handback_focus(terminal_app)
+
+            print(f"\n[Step B Result]")
+            print(f"• Search Field Focused:      {is_foc_b}")
+            print(f"• Focused Element Role:      {role_b}")
+            print(f"• Focused Element Subrole:   {subrole_b}")
+            print(f"• Matches 'AXSearchField':   {subrole_b == 'AXSearchField'}")
+
+            ans_b = ask_yes_no("👀 Look at WhatsApp: Did Cmd+F show the cursor in the search box? [y/n]: ", terminal_app)
+            summary["step_b"] = {
+                "status": "PASS" if (is_foc_b and ans_b) else "FAIL",
+                "search_field_focused": is_foc_b,
+                "focused_role": role_b,
+                "focused_subrole": subrole_b,
+                "matches_guard": subrole_b == "AXSearchField",
+                "cursor_in_search_box": ans_b,
+            }
+
+            # Dismiss search again with AXCancel to leave clean state for Step E
+            if activate_whatsapp_and_verify(wa_app, 2.0):
+                ApplicationServices.AXUIElementPerformAction(search_field, "AXCancel")
+                time.sleep(0.2)
+            handback_focus(terminal_app)
+
+        # -------------------------------------------------------------
+        # STEP E: Select Row N via AXPress on Child AXButton (Geometry-Based)
+        # -------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("STEP E: Select Row N via Geometry (AXPress on Child AXButton)")
+        print("=" * 70)
+        print_safety_warning()
+
+        geo_e = find_chat_rows_geometry(main_win, sf_rect)
+        print(f"• AXGroup Wrappers Found:      {geo_e['wrappers_count']}")
+        print(f"• AXButton Row Children Found: {geo_e['buttons_count']}")
+        print(f"• Sidebar X-Range:             [{geo_e['sidebar_x_range'][0]:.1f}, {geo_e['sidebar_x_range'][1]:.1f}]")
+        print(f"• Row Pitch:                   {geo_e['row_pitch']:.1f} px")
+
+        if geo_e["buttons_count"] == 0:
+            print("⚠️ SKIPPING Step E: 0 selectable chat rows detected via geometry.")
             summary["step_e"] = {
                 "skipped": True,
-                "reason": "0 selectable chat rows detected in container",
+                "reason": "0 selectable chat rows detected via geometry",
             }
         else:
+            rows = geo_e["rows"]
             row_choice = safe_input(
-                f"Enter row index to open (1 to {len(current_accepted)}) [default 1]: ",
+                f"Enter row index to open (1 to {len(rows)}) [default 1]: ",
                 terminal_app,
             ).strip()
-            row_idx = int(row_choice) if row_choice.isdigit() and 1 <= int(row_choice) <= len(current_accepted) else 1
+            row_idx = int(row_choice) if row_choice.isdigit() and 1 <= int(row_choice) <= len(rows) else 1
+            target_row = rows[row_idx - 1]
+            target_button = target_row["button"]
 
-            print(f"• Target: Row #{row_idx}")
+            print(f"• Target: Row #{row_idx} (child AXButton inside AXGroup wrapper)")
+
+            # SAFETY GUARD: Verify target button lies strictly inside sidebar and below search field
+            sidebar_x_min, sidebar_x_max = geo_e["sidebar_x_range"]
+            err_pos, pos_val = ApplicationServices.AXUIElementCopyAttributeValue(
+                target_button, ApplicationServices.kAXPositionAttribute, None
+            )
+            btn_x, btn_y = extract_point(pos_val) if err_pos == 0 else (target_row["x"], target_row["y"])
+
+            err_sz, sz_val = ApplicationServices.AXUIElementCopyAttributeValue(
+                target_button, ApplicationServices.kAXSizeAttribute, None
+            )
+            btn_w, btn_h = extract_size(sz_val) if err_sz == 0 else (target_row["w"], target_row["h"])
+
+            err_r, r = ApplicationServices.AXUIElementCopyAttributeValue(
+                target_button, ApplicationServices.kAXRoleAttribute, None
+            )
+            role_str = str(r) if err_r == 0 and r else ""
+
+            is_in_sidebar_x = (sidebar_x_min - 20.0 <= btn_x <= sidebar_x_max)
+            is_below_sf = (btn_y >= sf_y + sf_h - 10.0) if sf_h > 0 else True
+            is_not_conv_pane = (btn_x < sidebar_x_max)
+            is_button = (role_str == "AXButton")
+
+            if not (is_in_sidebar_x and is_not_conv_pane and is_below_sf and is_button):
+                print("\n❌ STEP E SAFETY GUARD VIOLATION: Refusing to press element!")
+                print(f"   Target button pos=({btn_x:.1f}, {btn_y:.1f}) size=({btn_w:.1f}, {btn_h:.1f}) role={role_str}")
+                print(f"   Sidebar X-range: [{sidebar_x_min:.1f}, {sidebar_x_max:.1f}], Search field bottom: {sf_y + sf_h:.1f}")
+                if not is_not_conv_pane:
+                    print("   DANGER: Target element position is inside conversation pane!")
+                summary["step_e"] = {
+                    "skipped": True,
+                    "reason": f"Safety guard aborted: button pos=({btn_x:.1f}, {btn_y:.1f}) outside sidebar bounds",
+                }
+                return 1
+
             safe_input(f"👉 Press [Enter] to execute AXPress on Row #{row_idx}...", terminal_app)
 
-            activate_whatsapp(wa_app)
-            err_e = ApplicationServices.AXUIElementPerformAction(current_accepted[row_idx - 1], "AXPress")
+            if not activate_whatsapp_and_verify(wa_app, 2.0):
+                print("❌ Aborting Step E: WhatsApp could not be brought frontmost.")
+                summary["step_e"] = {"skipped": False, "chat_opened": False, "error": "Activation failed"}
+                return 1
+
+            err_e = ApplicationServices.AXUIElementPerformAction(target_button, "AXPress")
             time.sleep(0.35)
+
+            # Inspect focused element role after selection
+            _, f_role_e, f_subrole_e = check_is_focused(target_button, app_el)
             handback_focus(terminal_app)
 
             print(f"\n[Step E Result]")
             print(f"• AXPress Call Return:       {'SUCCESS (0)' if err_e == 0 else f'ERROR ({err_e})'}")
-            user_obs = safe_input("👀 Look at WhatsApp on screen: Did the chat open? [y/n]: ", terminal_app).strip().lower()
-            confirmed = user_obs.startswith("y")
+            print(f"• Post-Press Focused Role:   {f_role_e}")
+            print(f"• Post-Press Focused Subrole:{f_subrole_e}")
+
+            confirmed = ask_yes_no("👀 Look at WhatsApp on screen: Did the chat open? [y/n]: ", terminal_app)
             print(f"• User Confirmed Opened:     {'YES' if confirmed else 'NO'}")
             summary["step_e"] = {
                 "skipped": False,
                 "row_index": row_idx,
                 "axpress_success": err_e == 0,
                 "chat_opened": confirmed,
+                "focused_role": f_role_e,
+                "focused_subrole": f_subrole_e,
             }
 
         # -------------------------------------------------------------
@@ -831,24 +650,28 @@ def main() -> int:
         print("• Safety: Queries ROLE and SUBROLE ONLY. Never reads text, values, or names.")
         safe_input("👉 Press [Enter] to inspect focused element role...", terminal_app)
 
-        activate_whatsapp(wa_app)
-        time.sleep(0.1)
-        err_f, focused_f = ApplicationServices.AXUIElementCopyAttributeValue(
-            app_el, ApplicationServices.kAXFocusedUIElementAttribute, None
-        )
-        f_role_f = "None"
-        f_subrole_f = "None"
-        if err_f == 0 and focused_f:
-            err_rf, rf = ApplicationServices.AXUIElementCopyAttributeValue(
-                focused_f, ApplicationServices.kAXRoleAttribute, None
+        if activate_whatsapp_and_verify(wa_app, 2.0):
+            time.sleep(0.1)
+            err_f, focused_f = ApplicationServices.AXUIElementCopyAttributeValue(
+                app_el, ApplicationServices.kAXFocusedUIElementAttribute, None
             )
-            if err_rf == 0 and rf:
-                f_role_f = str(rf)
-            err_srf, srf = ApplicationServices.AXUIElementCopyAttributeValue(
-                focused_f, ApplicationServices.kAXSubroleAttribute, None
-            )
-            if err_srf == 0 and srf:
-                f_subrole_f = str(srf)
+            f_role_f = "None"
+            f_subrole_f = "None"
+            if err_f == 0 and focused_f:
+                err_rf, rf = ApplicationServices.AXUIElementCopyAttributeValue(
+                    focused_f, ApplicationServices.kAXRoleAttribute, None
+                )
+                if err_rf == 0 and rf:
+                    f_role_f = str(rf)
+                err_srf, srf = ApplicationServices.AXUIElementCopyAttributeValue(
+                    focused_f, ApplicationServices.kAXSubroleAttribute, None
+                )
+                if err_srf == 0 and srf:
+                    f_subrole_f = str(srf)
+        else:
+            f_role_f = "Unknown"
+            f_subrole_f = "Unknown"
+
         handback_focus(terminal_app)
 
         print(f"\n[Step F Result]")
@@ -865,14 +688,11 @@ def main() -> int:
         summary_text = build_summary_text(summary)
         print("\n" + summary_text + "\n")
 
-        summary_file = PROJECT_ROOT / "whatsapp_experiment_summary.txt"
         try:
             summary_file.write_text(summary_text, encoding="utf-8")
             print(f"Summary written to: {summary_file.name} (gitignored)")
         except Exception as e:
             print(f"Could not write summary file: {e}")
-
-    return 0
 
 
 if __name__ == "__main__":
