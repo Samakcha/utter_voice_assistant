@@ -29,10 +29,11 @@ from collections import Counter, deque
 from datetime import datetime
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Auto-reexec inside the virtual environment if available
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -55,6 +56,7 @@ try:
         NSScreen,
         NSWorkspace,
     )
+    from Foundation import NSDate, NSRunLoop
     import Quartz
 except ImportError as e:
     print(f"Error: Required macOS frameworks (PyObjC / Quartz) not available: {e}")
@@ -86,22 +88,149 @@ def get_whatsapp_app() -> Optional[NSRunningApplication]:
     return None
 
 
-def activate_whatsapp_and_verify(app: NSRunningApplication, timeout_sec: float = 3.0) -> bool:
-    """
-    Activate WhatsApp and verify it is frontmost:
-    1. Check if already frontmost.
-    2. Bring WhatsApp forward with system launcher: subprocess `open -b net.whatsapp.WhatsApp`
-       and poll NSWorkspace.frontmostApplication() up to timeout_sec (3 s).
-    3. If still not frontmost, second attempt using NSRunningApplication.activateWithOptions_.
-    4. Manual focus mode: if activation still fails, prompt user to click WhatsApp window,
-       then run a 5-second countdown polling every 0.5 s whether WhatsApp is frontmost.
-       As soon as it is, return True immediately to run the step.
-       If it never becomes frontmost, abort safely.
-       No Enter press is needed in manual mode (prevents Enter from reaching WhatsApp).
-    """
+def get_frontmost_bundle_nsworkspace() -> str:
+    """Check frontmost app bundle ID via NSWorkspace."""
     ws = NSWorkspace.sharedWorkspace()
     front = ws.frontmostApplication()
-    if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
+    if front and front.bundleIdentifier():
+        return str(front.bundleIdentifier())
+    return "None"
+
+
+def get_frontmost_bundle_lsappinfo() -> str:
+    """
+    Independent frontmost check via LaunchServices daemon CLI (`lsappinfo`).
+    Queries launchservicesd directly, bypassing NSWorkspace / event loop.
+    """
+    try:
+        asn = subprocess.check_output(
+            ["lsappinfo", "front"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if not asn:
+            return "None"
+        info = subprocess.check_output(
+            ["lsappinfo", "info", "-only", "bundleid", asn],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        m = re.search(r'bundleID="([^"]+)"', info)
+        if m:
+            return m.group(1)
+        for line in info.splitlines():
+            line = line.strip()
+            if "bundleID=" in line:
+                return line.split("bundleID=", 1)[1].strip().strip('"')
+    except Exception:
+        pass
+    return "None"
+
+
+def get_frontmost_bundle_cgwindow() -> str:
+    """Alternative independent check via Quartz WindowServer layer-0 on-screen window list."""
+    try:
+        options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
+        win_list = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
+        if win_list:
+            for win in win_list:
+                layer = win.get("kCGWindowLayer", -1)
+                if layer == 0:
+                    pid = win.get("kCGWindowOwnerPID")
+                    if pid:
+                        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+                        if app and app.bundleIdentifier():
+                            return str(app.bundleIdentifier())
+    except Exception:
+        pass
+    return "None"
+
+
+def check_frontmost_dual() -> Tuple[str, str, bool]:
+    """
+    Query frontmost app via both NSWorkspace and independent check (lsappinfo).
+    Returns: (nsworkspace_bundle, independent_bundle, both_are_whatsapp)
+    """
+    b_nsws = get_frontmost_bundle_nsworkspace()
+    b_indep = get_frontmost_bundle_lsappinfo()
+    if b_indep == "None":
+        b_indep = get_frontmost_bundle_cgwindow()
+    both_wa = (b_nsws == WHATSAPP_BUNDLE_ID and b_indep == WHATSAPP_BUNDLE_ID)
+    return b_nsws, b_indep, both_wa
+
+
+def evaluate_dual_check(b_nsws: str, b_indep: str, context: str = "") -> Dict[str, Any]:
+    """
+    Evaluate agreement between NSWorkspace and independent (lsappinfo) frontmost checks.
+    Categorizes result into:
+    - AGREE_WHATSAPP: Both report net.whatsapp.WhatsApp
+    - AGREE_OTHER: Both agree on another application (e.g. Terminal)
+    - DISAGREE: One reports WhatsApp and the other does not, or they report different apps.
+    Records which check disagreed so we learn which check is unreliable.
+    """
+    both_wa = (b_nsws == WHATSAPP_BUNDLE_ID and b_indep == WHATSAPP_BUNDLE_ID)
+    both_agree = (b_nsws == b_indep)
+
+    if both_wa:
+        status = "AGREE_WHATSAPP"
+        disagreement_note = f"AGREED on WhatsApp (NSWorkspace='{b_nsws}', lsappinfo='{b_indep}')"
+        unreliable_check = "None"
+    elif both_agree:
+        status = "AGREE_OTHER"
+        disagreement_note = f"AGREED on other app (both reported '{b_nsws}')"
+        unreliable_check = "None"
+    else:
+        status = "DISAGREE"
+        if b_nsws == WHATSAPP_BUNDLE_ID and b_indep != WHATSAPP_BUNDLE_ID:
+            disagreement_note = f"DISAGREEMENT: NSWorkspace detected WhatsApp, but lsappinfo reported '{b_indep}'"
+            unreliable_check = "lsappinfo"
+        elif b_indep == WHATSAPP_BUNDLE_ID and b_nsws != WHATSAPP_BUNDLE_ID:
+            disagreement_note = f"DISAGREEMENT: lsappinfo detected WhatsApp, but NSWorkspace reported '{b_nsws}'"
+            unreliable_check = "NSWorkspace"
+        else:
+            disagreement_note = f"DISAGREEMENT: NSWorkspace reported '{b_nsws}', lsappinfo reported '{b_indep}'"
+            unreliable_check = "Both"
+
+    return {
+        "context": context,
+        "status": status,
+        "nsworkspace": b_nsws,
+        "lsappinfo": b_indep,
+        "both_whatsapp": both_wa,
+        "both_agree": both_agree,
+        "disagreement_note": disagreement_note,
+        "unreliable_check": unreliable_check,
+    }
+
+
+def activate_whatsapp_and_verify(
+    app: NSRunningApplication,
+    timeout_sec: float = 3.0,
+    step_name: str = "",
+    summary: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Activate WhatsApp and verify it is frontmost using dual checks:
+    1. Check if already frontmost (pumps run loop).
+    2. Bring WhatsApp forward with system launcher: subprocess `open -b net.whatsapp.WhatsApp`
+       and poll up to timeout_sec (3 s), pumping NSRunLoop on every poll.
+    3. If still not frontmost, second attempt using NSRunningApplication.activateWithOptions_,
+       polling and pumping NSRunLoop.
+    4. Manual focus mode: if automatic activation fails, prompt user to click WhatsApp window,
+       then run a 10-second countdown polling every 0.5 s and pumping NSRunLoop.
+       Prints both results on each poll, and prints which method detected WhatsApp.
+       No Enter press is needed in manual mode (prevents Enter from reaching WhatsApp).
+    5. Records all check results and any disagreements into summary.
+    """
+    # 0. Initial check
+    now = NSDate.date()
+    NSRunLoop.currentRunLoop().runUntilDate_(now.dateByAddingTimeInterval_(0.1))
+    b_nsws, b_indep, both_wa = check_frontmost_dual()
+    print(f"• Initial dual frontmost check: NSWorkspace='{b_nsws}', lsappinfo='{b_indep}'")
+    if both_wa:
+        rec = evaluate_dual_check(b_nsws, b_indep, context=f"{step_name} (Initial)")
+        if summary is not None:
+            summary.setdefault("dual_check_records", []).append(rec)
         return True
 
     # 1. System launcher: open -b net.whatsapp.WhatsApp
@@ -113,45 +242,102 @@ def activate_whatsapp_and_verify(app: NSRunningApplication, timeout_sec: float =
 
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        front = ws.frontmostApplication()
-        if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
+        now = NSDate.date()
+        NSRunLoop.currentRunLoop().runUntilDate_(now.dateByAddingTimeInterval_(0.1))
+        b_nsws, b_indep, both_wa = check_frontmost_dual()
+        print(f"  [Launcher poll] NSWorkspace='{b_nsws}', lsappinfo='{b_indep}'")
+        if both_wa:
+            print("✅ Detected WhatsApp frontmost via BOTH checks (launcher)!")
+            rec = evaluate_dual_check(b_nsws, b_indep, context=f"{step_name} (Launcher)")
+            if summary is not None:
+                summary.setdefault("dual_check_records", []).append(rec)
             return True
-        time.sleep(0.1)
 
     # 2. Second attempt: NSRunningApplication.activateWithOptions_
     print("• Second activation attempt: NSRunningApplication.activateWithOptions_...")
     app.activateWithOptions_(ApplicationServices.NSApplicationActivateIgnoringOtherApps)
     second_deadline = time.time() + 1.0
     while time.time() < second_deadline:
-        front = ws.frontmostApplication()
-        if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
+        now = NSDate.date()
+        NSRunLoop.currentRunLoop().runUntilDate_(now.dateByAddingTimeInterval_(0.1))
+        b_nsws, b_indep, both_wa = check_frontmost_dual()
+        print(f"  [ActivateWithOptions poll] NSWorkspace='{b_nsws}', lsappinfo='{b_indep}'")
+        if both_wa:
+            print("✅ Detected WhatsApp frontmost via BOTH checks (activateWithOptions)!")
+            rec = evaluate_dual_check(b_nsws, b_indep, context=f"{step_name} (ActivateWithOptions)")
+            if summary is not None:
+                summary.setdefault("dual_check_records", []).append(rec)
             return True
-        time.sleep(0.1)
 
-    # 3. Manual focus mode
-    curr_front = ws.frontmostApplication()
-    curr_id = curr_front.bundleIdentifier() if curr_front else "None"
-    print(f"\n⚠️ Automatic activation did not bring WhatsApp frontmost (current frontmost: {curr_id}).")
+    # 3. Manual focus mode (extended to 10s)
+    b_nsws, b_indep, both_wa = check_frontmost_dual()
+    print(f"\n⚠️ Automatic activation did not bring WhatsApp frontmost.")
+    print(f"   Current status: NSWorkspace='{b_nsws}', lsappinfo='{b_indep}'")
     print("👉 MANUAL FOCUS MODE: Please click the WhatsApp window with your mouse now!")
-    print("   (Checking every 0.5s for up to 5s; do NOT press Enter)...")
+    print("   (Waiting up to 10s, checking every 0.5s; do NOT press Enter)...")
 
-    countdown_deadline = time.time() + 5.0
+    countdown_deadline = time.time() + 10.0
     tick = 0
+
     while time.time() < countdown_deadline:
-        front = ws.frontmostApplication()
-        if front and front.bundleIdentifier() == WHATSAPP_BUNDLE_ID:
-            print("✅ Detected WhatsApp is frontmost! Continuing with step...")
-            return True
-        time.sleep(0.5)
+        now = NSDate.date()
+        NSRunLoop.currentRunLoop().runUntilDate_(now.dateByAddingTimeInterval_(0.1))
+        time.sleep(0.4)
         tick += 1
+
+        b_nsws, b_indep, both_wa = check_frontmost_dual()
+        print(f"   [Manual poll #{tick}] NSWorkspace='{b_nsws}' | lsappinfo='{b_indep}'")
+
+        if both_wa:
+            detected_method = "BOTH (NSWorkspace and lsappinfo agreed)"
+            print(f"\n✅ WhatsApp frontmost detected by: {detected_method}! Continuing with step...")
+            rec = evaluate_dual_check(b_nsws, b_indep, context=f"{step_name} (Manual Focus)")
+            if summary is not None:
+                summary.setdefault("dual_check_records", []).append(rec)
+            return True
+
+        wa_nsws = (b_nsws == WHATSAPP_BUNDLE_ID)
+        wa_indep = (b_indep == WHATSAPP_BUNDLE_ID)
+
+        detected_method = None
+        if wa_nsws and not wa_indep:
+            detected_method = f"NSWorkspace ONLY (lsappinfo reported '{b_indep}')"
+        elif wa_indep and not wa_nsws:
+            detected_method = f"lsappinfo ONLY (NSWorkspace reported '{b_nsws}')"
+
+        if detected_method:
+            # Pump run loop for up to 1.0s to give the second check opportunity to catch up
+            recheck_deadline = time.time() + 1.0
+            while time.time() < recheck_deadline:
+                now = NSDate.date()
+                NSRunLoop.currentRunLoop().runUntilDate_(now.dateByAddingTimeInterval_(0.1))
+                b_nsws2, b_indep2, both_wa2 = check_frontmost_dual()
+                if both_wa2:
+                    detected_method = "BOTH (NSWorkspace and lsappinfo agreed after pump)"
+                    print(f"\n✅ WhatsApp frontmost detected by: {detected_method}! Continuing with step...")
+                    rec = evaluate_dual_check(b_nsws2, b_indep2, context=f"{step_name} (Manual Focus)")
+                    if summary is not None:
+                        summary.setdefault("dual_check_records", []).append(rec)
+                    return True
+                time.sleep(0.1)
+
+            print(f"\n⚠️ WhatsApp frontmost detected by: {detected_method}!")
+            print(f"   NSWorkspace: '{b_nsws}', lsappinfo: '{b_indep}'")
+            rec = evaluate_dual_check(b_nsws, b_indep, context=f"{step_name} (Manual Focus)")
+            if summary is not None:
+                summary.setdefault("dual_check_records", []).append(rec)
+            return True
+
         if tick % 2 == 0:
             remaining = int(round(max(0.0, countdown_deadline - time.time())))
             print(f"   ...waiting for click ({remaining}s remaining)...")
 
-    curr_front = ws.frontmostApplication()
-    curr_id = curr_front.bundleIdentifier() if curr_front else "None"
-    print(f"\n❌ ACTIVATION FAILED: WhatsApp did not become frontmost within 5s manual focus period.")
-    print(f"   Current frontmost app is: {curr_id}")
+    b_nsws, b_indep, _ = check_frontmost_dual()
+    print(f"\n❌ ACTIVATION FAILED: WhatsApp not detected within 10s manual focus period.")
+    print(f"   Final status: NSWorkspace='{b_nsws}', lsappinfo='{b_indep}'")
+    rec = evaluate_dual_check(b_nsws, b_indep, context=f"{step_name} (Manual Focus Failed)")
+    if summary is not None:
+        summary.setdefault("dual_check_records", []).append(rec)
     return False
 
 
@@ -159,9 +345,11 @@ def handback_focus(terminal_app: NSRunningApplication, timeout_sec: float = 2.0)
     """
     CRITICAL SAFETY GUARD:
     Re-activate user's Terminal and verify it is frontmost before accepting input.
-    Prevents user Enter from reaching WhatsApp.
+    Pumps NSRunLoop while polling. Prevents user Enter from reaching WhatsApp.
     """
     ws = NSWorkspace.sharedWorkspace()
+    now = NSDate.date()
+    NSRunLoop.currentRunLoop().runUntilDate_(now.dateByAddingTimeInterval_(0.05))
     front = ws.frontmostApplication()
     if front and front.processIdentifier() == terminal_app.processIdentifier():
         return True
@@ -169,10 +357,11 @@ def handback_focus(terminal_app: NSRunningApplication, timeout_sec: float = 2.0)
     terminal_app.activateWithOptions_(ApplicationServices.NSApplicationActivateIgnoringOtherApps)
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
+        now = NSDate.date()
+        NSRunLoop.currentRunLoop().runUntilDate_(now.dateByAddingTimeInterval_(0.05))
         front = ws.frontmostApplication()
         if front and front.processIdentifier() == terminal_app.processIdentifier():
             return True
-        time.sleep(0.05)
 
     # Fallback to system launcher for terminal bundle
     term_bundle = terminal_app.bundleIdentifier()
@@ -183,10 +372,11 @@ def handback_focus(terminal_app: NSRunningApplication, timeout_sec: float = 2.0)
             pass
         fallback_deadline = time.time() + 1.0
         while time.time() < fallback_deadline:
+            now = NSDate.date()
+            NSRunLoop.currentRunLoop().runUntilDate_(now.dateByAddingTimeInterval_(0.05))
             front = ws.frontmostApplication()
             if front and front.processIdentifier() == terminal_app.processIdentifier():
                 return True
-            time.sleep(0.05)
 
     return False
 
@@ -223,24 +413,39 @@ def print_safety_warning() -> None:
     print("-" * 70)
 
 
-def post_whitelisted_key(keycode: int, modifiers: int = 0) -> None:
+def post_whitelisted_key(
+    keycode: int,
+    modifiers: int = 0,
+    dual_check_fn: Optional[Callable[[], Tuple[str, str, bool]]] = None,
+    summary: Optional[Dict[str, Any]] = None,
+    context: str = "Key Press",
+) -> None:
     """
     Post a keyboard event strictly constrained to the whitelist {3, 9}.
-    Immediately BEFORE posting, re-check that the frontmost app is net.whatsapp.WhatsApp
-    and print the frontmost bundle id. Aborts if not WhatsApp.
+    CRITICAL SAFETY RULE:
+    Post key ONLY if BOTH independent checks report net.whatsapp.WhatsApp.
+    If they disagree or either is not WhatsApp, abort the step and print both values.
     """
     assert keycode in ALLOWED_EXPERIMENT_KEYCODES, (
         f"NEVER-SEND VIOLATION: Keycode {keycode} is not in whitelist {ALLOWED_EXPERIMENT_KEYCODES}"
     )
 
-    ws = NSWorkspace.sharedWorkspace()
-    front = ws.frontmostApplication()
-    front_bundle = front.bundleIdentifier() if front else "None"
-    print(f"• Pre-key frontmost verification: {front_bundle}")
+    check_fn = dual_check_fn or check_frontmost_dual
+    b_nsws, b_indep, both_wa = check_fn()
+    rec = evaluate_dual_check(b_nsws, b_indep, context=context)
+    if summary is not None:
+        summary.setdefault("dual_check_records", []).append(rec)
 
-    if front_bundle != WHATSAPP_BUNDLE_ID:
+    print(f"• Pre-key dual frontmost verification: NSWorkspace='{b_nsws}', lsappinfo='{b_indep}'")
+
+    if not both_wa:
+        print(f"\n❌ CRITICAL SAFETY ABORT: Refusing to post key {keycode}!")
+        print(f"   NSWorkspace check: '{b_nsws}'")
+        print(f"   lsappinfo check:   '{b_indep}'")
+        print(f"   Evaluation:        {rec['disagreement_note']}")
         raise RuntimeError(
-            f"SAFETY ABORT: Cannot post key event! Frontmost app is '{front_bundle}', not '{WHATSAPP_BUNDLE_ID}'."
+            f"DUAL FRONTMOST SAFETY ABORT: Key {keycode} blocked. "
+            f"NSWorkspace='{b_nsws}', lsappinfo='{b_indep}'. Both must be '{WHATSAPP_BUNDLE_ID}'."
         )
 
     down = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
@@ -431,6 +636,22 @@ def build_summary_text(summary: Dict[str, Any]) -> str:
         lines.append(
             f"Step F (Post-Open Focus Role):    Role: {s_f.get('focused_role')} | Subrole: {s_f.get('focused_subrole')}"
         )
+    if "dual_check_records" in summary and summary["dual_check_records"]:
+        lines.append("-" * 70)
+        lines.append("DUAL FRONTMOST CHECK AUDIT LOG (NSWorkspace vs lsappinfo):")
+        for rec in summary["dual_check_records"]:
+            ctx = rec.get("context", "Check")
+            note = rec.get("disagreement_note", "")
+            lines.append(f"  • [{ctx}] {note}")
+        disagreements = [r for r in summary["dual_check_records"] if r.get("status") == "DISAGREE"]
+        if disagreements:
+            lines.append(f"⚠️ TOTAL DISAGREEMENTS: {len(disagreements)}")
+            for d in disagreements:
+                lines.append(
+                    f"   - {d.get('context')}: unreliable={d.get('unreliable_check')} ({d.get('disagreement_note')})"
+                )
+        else:
+            lines.append("✅ Zero disagreements observed between checks.")
     lines.append("=" * 70)
     return "\n".join(lines)
 
@@ -524,7 +745,7 @@ def main() -> int:
         print("• Safety: Zero keystrokes posted.")
         safe_input("👉 Press [Enter] to execute Step A...", terminal_app)
 
-        if not activate_whatsapp_and_verify(wa_app, 3.0):
+        if not activate_whatsapp_and_verify(wa_app, 3.0, step_name="Step A", summary=summary):
             print("❌ Aborting Step A: WhatsApp could not be brought frontmost.")
             summary["step_a"] = {"search_field_focused": False, "error": "Activation failed"}
             return 1
@@ -561,7 +782,7 @@ def main() -> int:
         print("• Action: Paste 'Alex Test' via Cmd+V (keycode 9 with Command flag) and restore clipboard.")
         safe_input("👉 Press [Enter] to execute Step C...", terminal_app)
 
-        if not activate_whatsapp_and_verify(wa_app, 3.0):
+        if not activate_whatsapp_and_verify(wa_app, 3.0, step_name="Step C", summary=summary):
             print("❌ Aborting Step C: WhatsApp could not be brought frontmost.")
             summary["step_c"] = {"guard_passed": False, "pasted": False, "error": "Activation failed"}
             return 1
@@ -586,7 +807,12 @@ def main() -> int:
                 except Exception:
                     pass
 
-                post_whitelisted_key(9, Quartz.kCGEventFlagMaskCommand)
+                post_whitelisted_key(
+                    9,
+                    Quartz.kCGEventFlagMaskCommand,
+                    summary=summary,
+                    context="Step C Cmd+V",
+                )
                 time.sleep(0.4)  # Allow search filter to populate
 
                 geo_post = find_chat_rows_geometry(main_win, sf_rect)
@@ -625,7 +851,7 @@ def main() -> int:
         print("• Goal:   Verify if AXCancel restores the full chat list count.")
         safe_input("👉 Press [Enter] to execute Step D...", terminal_app)
 
-        if not activate_whatsapp_and_verify(wa_app, 3.0):
+        if not activate_whatsapp_and_verify(wa_app, 3.0, step_name="Step D", summary=summary):
             print("❌ Aborting Step D: WhatsApp could not be brought frontmost.")
             summary["step_d"] = {"returned_full_list": False, "error": "Activation failed"}
             return 1
@@ -684,12 +910,17 @@ def main() -> int:
             print("• Safety: Whitelisted keycode only; no Return.")
             safe_input("👉 Press [Enter] to execute Step B (Cmd+F from unfocused state)...", terminal_app)
 
-            if not activate_whatsapp_and_verify(wa_app, 3.0):
+            if not activate_whatsapp_and_verify(wa_app, 3.0, step_name="Step B", summary=summary):
                 print("❌ Aborting Step B: WhatsApp could not be brought frontmost.")
                 summary["step_b"] = {"status": "FAIL", "error": "Activation failed"}
                 return 1
 
-            post_whitelisted_key(3, Quartz.kCGEventFlagMaskCommand)
+            post_whitelisted_key(
+                3,
+                Quartz.kCGEventFlagMaskCommand,
+                summary=summary,
+                context="Step B Cmd+F",
+            )
             time.sleep(0.25)
             is_foc_b, role_b, subrole_b = check_is_focused(search_field, app_el)
             handback_focus(terminal_app)
@@ -711,7 +942,7 @@ def main() -> int:
             }
 
             # Dismiss search again with AXCancel to leave clean state for Step E
-            if activate_whatsapp_and_verify(wa_app, 3.0):
+            if activate_whatsapp_and_verify(wa_app, 3.0, step_name="Step B Cleanup", summary=summary):
                 ApplicationServices.AXUIElementPerformAction(search_field, "AXCancel")
                 time.sleep(0.2)
             handback_focus(terminal_app)
@@ -784,7 +1015,7 @@ def main() -> int:
 
             safe_input(f"👉 Press [Enter] to execute AXPress on Row #{row_idx}...", terminal_app)
 
-            if not activate_whatsapp_and_verify(wa_app, 3.0):
+            if not activate_whatsapp_and_verify(wa_app, 3.0, step_name="Step E", summary=summary):
                 print("❌ Aborting Step E: WhatsApp could not be brought frontmost.")
                 summary["step_e"] = {"skipped": False, "chat_opened": False, "error": "Activation failed"}
                 return 1
@@ -822,7 +1053,7 @@ def main() -> int:
         print("• Safety: Queries ROLE and SUBROLE ONLY. Never reads text, values, or names.")
         safe_input("👉 Press [Enter] to inspect focused element role...", terminal_app)
 
-        if activate_whatsapp_and_verify(wa_app, 3.0):
+        if activate_whatsapp_and_verify(wa_app, 3.0, step_name="Step F", summary=summary):
             time.sleep(0.1)
             err_f, focused_f = ApplicationServices.AXUIElementCopyAttributeValue(
                 app_el, ApplicationServices.kAXFocusedUIElementAttribute, None
