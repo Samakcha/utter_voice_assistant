@@ -230,3 +230,106 @@ def test_window_visibility_reporting_structure_only():
         assert all(isinstance(v, float) for v in scr["cocoa_frame"])
         assert len(scr["ax_bounds"]) == 4
         assert all(isinstance(v, float) for v in scr["ax_bounds"])
+
+
+def test_evaluate_dual_check_agree_whatsapp():
+    """Verify dual check agrees when both NSWorkspace and lsappinfo report WhatsApp."""
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from whatsapp_experiment import evaluate_dual_check
+
+    res = evaluate_dual_check("net.whatsapp.WhatsApp", "net.whatsapp.WhatsApp", context="Test Agree")
+    assert res["status"] == "AGREE_WHATSAPP"
+    assert res["both_whatsapp"] is True
+    assert res["both_agree"] is True
+    assert res["unreliable_check"] == "None"
+    assert "AGREED on WhatsApp" in res["disagreement_note"]
+
+
+def test_evaluate_dual_check_disagree_nsworkspace_stale():
+    """Verify dual check flags NSWorkspace as unreliable when lsappinfo reports WhatsApp."""
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from whatsapp_experiment import evaluate_dual_check
+
+    res = evaluate_dual_check("com.apple.Terminal", "net.whatsapp.WhatsApp", context="Test Stale NSWS")
+    assert res["status"] == "DISAGREE"
+    assert res["both_whatsapp"] is False
+    assert res["both_agree"] is False
+    assert res["unreliable_check"] == "NSWorkspace"
+    assert "lsappinfo detected WhatsApp, but NSWorkspace reported 'com.apple.Terminal'" in res["disagreement_note"]
+
+
+def test_evaluate_dual_check_disagree_lsappinfo_stale():
+    """Verify dual check flags lsappinfo as unreliable when NSWorkspace reports WhatsApp."""
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from whatsapp_experiment import evaluate_dual_check
+
+    res = evaluate_dual_check("net.whatsapp.WhatsApp", "com.apple.Terminal", context="Test Stale LS")
+    assert res["status"] == "DISAGREE"
+    assert res["both_whatsapp"] is False
+    assert res["both_agree"] is False
+    assert res["unreliable_check"] == "lsappinfo"
+    assert "NSWorkspace detected WhatsApp, but lsappinfo reported 'com.apple.Terminal'" in res["disagreement_note"]
+
+
+def test_evaluate_dual_check_both_terminal():
+    """Verify dual check handles both checks reporting Terminal (AGREE_OTHER)."""
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from whatsapp_experiment import evaluate_dual_check
+
+    res = evaluate_dual_check("com.apple.Terminal", "com.apple.Terminal", context="Test Both Terminal")
+    assert res["status"] == "AGREE_OTHER"
+    assert res["both_whatsapp"] is False
+    assert res["both_agree"] is True
+    assert res["unreliable_check"] == "None"
+    assert "AGREED on other app" in res["disagreement_note"]
+
+
+def test_post_whitelisted_key_safety_rule_with_fake_checks():
+    """
+    CRITICAL SAFETY RULE TEST:
+    Verify post_whitelisted_key:
+    - Rejects when checks disagree
+    - Rejects when both checks report Terminal
+    - Accepts when both checks report WhatsApp
+    """
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from unittest.mock import patch
+    from whatsapp_experiment import post_whitelisted_key
+
+    summary = {}
+
+    # 1. Fake checks disagree (NSWorkspace=Terminal, lsappinfo=WhatsApp) -> MUST RAISE
+    fake_disagree = lambda: ("com.apple.Terminal", "net.whatsapp.WhatsApp", False)
+    with pytest.raises(RuntimeError) as exc_info:
+        post_whitelisted_key(3, dual_check_fn=fake_disagree, summary=summary, context="Test Disagree")
+    assert "DUAL FRONTMOST SAFETY ABORT" in str(exc_info.value)
+    assert len(summary["dual_check_records"]) == 1
+    assert summary["dual_check_records"][0]["status"] == "DISAGREE"
+
+    # 2. Fake checks both Terminal -> MUST RAISE
+    fake_both_term = lambda: ("com.apple.Terminal", "com.apple.Terminal", False)
+    with pytest.raises(RuntimeError) as exc_info:
+        post_whitelisted_key(9, dual_check_fn=fake_both_term, summary=summary, context="Test Both Term")
+    assert "DUAL FRONTMOST SAFETY ABORT" in str(exc_info.value)
+    assert len(summary["dual_check_records"]) == 2
+    assert summary["dual_check_records"][1]["status"] == "AGREE_OTHER"
+
+    # 3. Fake checks both WhatsApp -> Passes safety rule and proceeds to event post
+    fake_agree = lambda: ("net.whatsapp.WhatsApp", "net.whatsapp.WhatsApp", True)
+    with patch("Quartz.CGEventPost") as mock_post:
+        post_whitelisted_key(3, dual_check_fn=fake_agree, summary=summary, context="Test Agree")
+        assert mock_post.called
+    assert len(summary["dual_check_records"]) == 3
+    assert summary["dual_check_records"][2]["status"] == "AGREE_WHATSAPP"
+
+
+def test_runloop_pump_in_polling_loops():
+    """Verify NSRunLoop runUntilDate is called across polling loops in whatsapp_experiment.py."""
+    source = EXPERIMENT_PATH.read_text(encoding="utf-8")
+    assert "NSRunLoop.currentRunLoop().runUntilDate_" in source
+    assert source.count("NSRunLoop.currentRunLoop().runUntilDate_") >= 4
