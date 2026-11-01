@@ -202,3 +202,31 @@ def test_gitignore_contains_probe_experiment_and_layout_patterns():
     assert "*probe*.txt" in content or "probe" in content
     assert "*experiment*.txt" in content or "experiment" in content
     assert "whatsapp_layout*.txt" in content or "whatsapp_layout" in content
+
+
+def test_activation_flow_has_launcher_and_manual_mode():
+    """Verify activate_whatsapp_and_verify uses open -b launcher, activateWithOptions, and manual countdown."""
+    source = EXPERIMENT_PATH.read_text(encoding="utf-8")
+    assert 'subprocess.run(["open", "-b", WHATSAPP_BUNDLE_ID]' in source
+    assert "activateWithOptions_" in source
+    assert "MANUAL FOCUS MODE" in source
+    assert "countdown_deadline" in source
+
+
+def test_window_visibility_reporting_structure_only():
+    """Verify report_window_and_screen_visibility exists, handles None, and queries NSScreen frames."""
+    import sys
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    from whatsapp_experiment import report_window_and_screen_visibility
+
+    # Test handling when no window is present
+    result = report_window_and_screen_visibility(None)
+    assert result["on_screen"] is False
+    assert result["window_pos"] == (0.0, 0.0)
+    assert result["window_size"] == (0.0, 0.0)
+    assert isinstance(result["screens"], list)
+    for scr in result["screens"]:
+        assert len(scr["cocoa_frame"]) == 4
+        assert all(isinstance(v, float) for v in scr["cocoa_frame"])
+        assert len(scr["ax_bounds"]) == 4
+        assert all(isinstance(v, float) for v in scr["ax_bounds"])
