@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import logging
 import re
 from typing import Optional
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class CommandMatch:
     action_id: str
     normalized_text: str
     matched_variant: str
+    extracted_name: Optional[str] = None
 
 
 def normalize_command_text(text: str) -> str:
@@ -82,6 +84,80 @@ _TAKE_NOTE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Regex components for the "open WhatsApp" command
+_OPEN_WA_VERB = r"(?:open(?:\s+up)?|launch|bring\s+up)"
+_OPEN_WA_TARGET = r"(?:(?:the|my)\s+)?whatsapp(?:\s+(?:app|application))?"
+
+_OPEN_WHATSAPP_PATTERN = re.compile(
+    rf"^{_POLITENESS_PREFIX}{_OPEN_WA_VERB}\s+{_OPEN_WA_TARGET}{_POLITENESS_SUFFIX}$",
+    re.IGNORECASE,
+)
+
+# Regex components for the "whatsapp search" command
+_WA_SEARCH_PREFIX = (
+    r"(?:"
+    r"search\s+(?:whatsapp\s+)?for\s+|"
+    r"search\s+whatsapp\s+for\s+|"
+    r"search\s+whatsapp\s+|"
+    r"search\s+for\s+|"
+    r"search\s+|"
+    r"find\s+"
+    r")"
+)
+_WA_SEARCH_SUFFIX = r"(?:\s+(?:on|in)\s+whatsapp)?"
+
+_WHATSAPP_SEARCH_PATTERN = re.compile(
+    rf"^{_POLITENESS_PREFIX}{_WA_SEARCH_PREFIX}(?P<raw_name>.+?){_WA_SEARCH_SUFFIX}{_POLITENESS_SUFFIX}$",
+    re.IGNORECASE,
+)
+
+RESERVED_START_WORDS = {
+    "the", "a", "an", "my", "notes", "note", "whatsapp", "chat", "app", "for"
+}
+RESERVED_ALL_WORDS = {
+    "the", "a", "an", "my", "notes", "note", "whatsapp", "chat", "app", "for"
+}
+
+
+def is_valid_name_char(c: str) -> bool:
+    """Check if character is a letter in any Unicode script, apostrophe, or hyphen."""
+    cat = unicodedata.category(c)
+    return cat.startswith("L") or cat.startswith("M") or c in ("'", "’", "-")
+
+
+def validate_extracted_name(raw_name: str) -> Optional[str]:
+    """
+    Validate and clean extracted name slot:
+    - 1-4 words.
+    - Letters in any script (including vowel marks), apostrophes and hyphens only.
+    - Strips Whisper trailing punctuation.
+    - Rejects digits, empty names.
+    - Rejects names starting with reserved words (the, a, an, my, notes, note, whatsapp, chat, app, for).
+    - Rejects names consisting only of reserved words or containing reserved preposition 'for'.
+    - Allows single-letter middle initials like 'A' in 'John A Smith'.
+    """
+    if not raw_name:
+        return None
+    raw = raw_name.strip().rstrip(".,?!;:\"'—–-").strip(" \t\n\r\"'")
+    if not raw:
+        return None
+    words = raw.split()
+    if not (1 <= len(words) <= 4):
+        return None
+    if words[0].lower() in RESERVED_START_WORDS:
+        return None
+    if all(w.lower() in RESERVED_ALL_WORDS for w in words):
+        return None
+    if any(w.lower() == "for" for w in words):
+        return None
+    for w in words:
+        w_core = w.strip("'’-_")
+        if not w_core:
+            return None
+        if not all(is_valid_name_char(c) for c in w):
+            return None
+    return " ".join(words)
+
 
 def match_command(text: str) -> Optional[CommandMatch]:
     """
@@ -110,5 +186,24 @@ def match_command(text: str) -> Optional[CommandMatch]:
             normalized_text=normalized,
             matched_variant="take_note",
         )
+
+    if _OPEN_WHATSAPP_PATTERN.match(normalized):
+        return CommandMatch(
+            action_id="open_whatsapp",
+            normalized_text=normalized,
+            matched_variant="open_whatsapp",
+        )
+
+    clean_text = text.strip().rstrip(".,?!;:\"'—–-").strip()
+    search_m = _WHATSAPP_SEARCH_PATTERN.match(clean_text)
+    if search_m:
+        extracted = validate_extracted_name(search_m.group("raw_name"))
+        if extracted:
+            return CommandMatch(
+                action_id="whatsapp_search",
+                normalized_text=normalized,
+                matched_variant="whatsapp_search",
+                extracted_name=extracted,
+            )
 
     return None

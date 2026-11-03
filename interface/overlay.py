@@ -41,7 +41,7 @@ class VoiceAssistantOverlay:
 
     DEFAULT_HEIGHT = 44.0
     MIN_WIDTH = 260.0
-    MAX_WIDTH = 680.0
+    MAX_WIDTH = 780.0
     PADDING = 36.0
 
     def __init__(self):
@@ -251,6 +251,51 @@ class VoiceAssistantOverlay:
     def show_note_failed_copied(self, reason: str) -> None:
         """Display failure message: 'Couldn't save note: <reason>. Text copied to clipboard.'; auto-fades after 3.5s."""
         self._show_content(f"⚠️ Couldn't save note: {reason}. Text copied to clipboard.", auto_dismiss_sec=3.5)
+
+    def show_whatsapp_opening(self) -> None:
+        """Display opening WhatsApp state."""
+        self._show_content("Opening WhatsApp...", auto_dismiss_sec=None)
+
+    def show_whatsapp_ready(self) -> None:
+        """Display WhatsApp ready state; auto-fades after ~2.0s."""
+        self._show_content("✅ WhatsApp ready", auto_dismiss_sec=2.0)
+
+    def show_whatsapp_searching(self, name: str) -> None:
+        """Display searching WhatsApp state."""
+        self._show_content(f"🔍 Searching WhatsApp for {name}...", auto_dismiss_sec=None)
+
+    def show_whatsapp_search_success(self, name: Optional[str] = None) -> None:
+        """Display guidance message after search paste; stays about 4.0s."""
+        if name:
+            text = (
+                f"Searching WhatsApp for {name}\n"
+                f"Pick the chat, click the message box, then press Control+Option+D to dictate. Press Enter to send."
+            )
+        else:
+            text = (
+                "Pick the chat, click the message box, then press Control+Option+D to dictate. Press Enter to send."
+            )
+        self._show_content(text, auto_dismiss_sec=4.0)
+
+    def show_whatsapp_not_front(self) -> None:
+        """Display warning when WhatsApp is not frontmost; auto-fades after ~3.0s."""
+        self._show_content("⚠️ WhatsApp isn't in front. Say 'open WhatsApp' first.", auto_dismiss_sec=3.0)
+
+    def show_whatsapp_focus_failed(self) -> None:
+        """Display error when search field cannot be focused; auto-fades after ~3.0s."""
+        self._show_content("⚠️ Couldn't focus WhatsApp search", auto_dismiss_sec=3.0)
+
+    def show_whatsapp_ui_unreadable(self) -> None:
+        """Display error when WhatsApp UI tree cannot be read; auto-fades after ~3.5s."""
+        self._show_content("⚠️ WhatsApp's UI isn't readable. Try restarting WhatsApp.", auto_dismiss_sec=3.5)
+
+    def show_whatsapp_open_failed(self, reason: str) -> None:
+        """Display error when WhatsApp cannot be launched; auto-fades after ~3.0s."""
+        self._show_content(f"⚠️ Couldn't open WhatsApp: {reason}", auto_dismiss_sec=3.0)
+
+    def show_whatsapp_unresponsive(self) -> None:
+        """Display error when WhatsApp AX messaging times out; auto-fades after ~3.0s."""
+        self._show_content("⚠️ Couldn't reach WhatsApp", auto_dismiss_sec=3.0)
 
     def hide(self) -> None:
         """Hide overlay immediately (e.g. on Esc cancellation)."""

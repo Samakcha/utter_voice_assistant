@@ -336,7 +336,8 @@ def test_note_save_failure_fallback_backup_and_clipboard(tmp_path: Path, monkeyp
     assert "Notes AppleScript error (-1743)" in content
 
     # 2. Check pasteboard content
-    pb = AppKit.NSPasteboard.generalPasteboard()
+    from interface.clipboard import get_general_pasteboard
+    pb = get_general_pasteboard()
     copied = pb.stringForType_(AppKit.NSPasteboardTypeString)
     assert copied == "Critical thought that must not be lost."
 
