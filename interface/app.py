@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -26,10 +27,16 @@ from engine.notes_writer import (
 from engine.session import SessionManager
 from engine.stop_phrases import detect_stop_phrase, validate_stop_phrases
 from engine.transcriber import BaseTranscriber
-from .clipboard import paste_and_restore
+from .clipboard import get_general_pasteboard, paste_and_restore
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
 from .overlay import VoiceAssistantOverlay
 from .permissions import format_permissions_report, get_all_permissions, open_settings_pane
+from .whatsapp_control import (
+    WhatsAppActionResult,
+    check_whatsapp_frontmost_dual,
+    open_whatsapp_async,
+    search_whatsapp_async,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +108,7 @@ class VoiceAssistantApp(rumps.App):
         self._note_session_ended: bool = False
         self._note_lock = threading.Lock()
         self._cancel_pending_note_start: bool = False
+        self._session_whatsapp_front: bool = False
 
         # Connect session lifecycle callbacks
         self.session_manager.on_session_start = self._on_session_start
@@ -214,6 +222,13 @@ class VoiceAssistantApp(rumps.App):
 
     def _on_session_start(self, mode: SessionMode) -> None:
         """Callback from engine when listening session begins."""
+        try:
+            both_front, _, _ = check_whatsapp_frontmost_dual()
+            self._session_whatsapp_front = bool(both_front)
+        except Exception as e:
+            logger.debug("Failed dual frontmost check at session start: %s", e)
+            self._session_whatsapp_front = False
+
         if mode == SessionMode.DICTATION:
             with self._dictation_lock:
                 self._dictation_session_id = self.session_manager.current_session_id
@@ -622,6 +637,17 @@ class VoiceAssistantApp(rumps.App):
             logger.info("[Dictation Complete] No speech or empty text; nothing to insert.")
             return
 
+        # Privacy guard for WhatsApp frontmost
+        if self._session_whatsapp_front and not self.config.privacy.keep_audio_when_whatsapp_front:
+            display_text = f"[REDACTED (WhatsApp active: {formatted.word_count} words)]"
+            if session_result and session_result.audio_path and session_result.audio_path.exists():
+                try:
+                    session_result.audio_path.unlink()
+                except Exception as e:
+                    logger.debug("Failed to delete WhatsApp dictation audio: %s", e)
+        else:
+            display_text = formatted.text
+
         t_paste_0 = time.perf_counter()
 
         def _on_paste_done(restored: bool):
@@ -632,24 +658,35 @@ class VoiceAssistantApp(rumps.App):
                 self.overlay.show_dictation_inserted(formatted.word_count)
 
             lat_str = ", ".join(f"{l:.3f}s" for l in latencies) if latencies else "0.0s"
-            logger.info(
-                "[Dictation Complete] Chunks: %d | Transcribe Latencies: [%s] | End Reason: %s (%s) | Words: %d | Paste Duration: %.1fms",
-                len(chunks_list),
-                lat_str,
-                end_reason_str,
-                matched_phrase_str,
-                formatted.word_count,
-                paste_duration_ms,
-            )
+            if self._session_whatsapp_front and not self.config.privacy.keep_audio_when_whatsapp_front:
+                logger.info(
+                    "[Dictation Complete] WhatsApp Frontmost | Words: %d | Chunks: %d | Latencies: [%s] | End Reason: %s (%s) | Paste Duration: %.1fms",
+                    formatted.word_count,
+                    len(chunks_list),
+                    lat_str,
+                    end_reason_str,
+                    matched_phrase_str,
+                    paste_duration_ms,
+                )
+            else:
+                logger.info(
+                    "[Dictation Complete] Chunks: %d | Transcribe Latencies: [%s] | End Reason: %s (%s) | Words: %d | Paste Duration: %.1fms",
+                    len(chunks_list),
+                    lat_str,
+                    end_reason_str,
+                    matched_phrase_str,
+                    formatted.word_count,
+                    paste_duration_ms,
+                )
             print(
                 f"\n"
                 f"┌─────────────────────────────────────────────────────────\n"
-                f"│ [Dictation Inserted] \"{formatted.text}\"\n"
+                f"│ [Dictation Inserted] \"{display_text}\"\n"
                 f"│ Words:            {formatted.word_count}\n"
                 f"│ Chunks:           {len(chunks_list)} (Transcribe times: [{lat_str}])\n"
                 f"│ End Reason:       {end_reason_str} ({matched_phrase_str})\n"
                 f"│ Paste Duration:   {paste_duration_ms:.1f} ms\n"
-                f"│ Audio File:       {session_result.audio_path.name if session_result and session_result.audio_path else 'None'}\n"
+                f"│ Audio File:       {session_result.audio_path.name if session_result and session_result.audio_path and session_result.audio_path.exists() else 'Deleted (Privacy)'}\n"
                 f"└─────────────────────────────────────────────────────────\n",
                 flush=True,
             )
@@ -694,6 +731,14 @@ class VoiceAssistantApp(rumps.App):
                 self.overlay.show_note_empty()
             logger.info("[Note Complete] Empty note text; nothing to create.")
             return
+
+        # Privacy guard for WhatsApp frontmost
+        if self._session_whatsapp_front and not self.config.privacy.keep_audio_when_whatsapp_front:
+            if session_result and session_result.audio_path and session_result.audio_path.exists():
+                try:
+                    session_result.audio_path.unlink()
+                except Exception as e:
+                    logger.debug("Failed to delete WhatsApp note audio: %s", e)
 
         word_count = len(final_text.split())
         if self.overlay is not None:
@@ -756,7 +801,7 @@ class VoiceAssistantApp(rumps.App):
 
                 # Copy text to clipboard as normal text (no transient flag)
                 try:
-                    pb = AppKit.NSPasteboard.generalPasteboard()
+                    pb = get_general_pasteboard()
                     pb.clearContents()
                     pb.setString_forType_(final_text, AppKit.NSPasteboardTypeString)
                 except Exception as e:
@@ -800,7 +845,7 @@ class VoiceAssistantApp(rumps.App):
 
         self._restore_idle_ui()
 
-        # Handle Command Mode: Evaluate rule layer
+        # Handle Command Mode: Evaluate rule layer FIRST before any logging or notification
         t_rule_0 = time.perf_counter()
         match = match_command(tx_result.text)
         t_rule_1 = time.perf_counter()
@@ -811,6 +856,33 @@ class VoiceAssistantApp(rumps.App):
             if session_result.trailing_silence_sec > 0.0
             else self.config.timeouts.command_silence_sec
         )
+
+        is_wa_search = (match is not None and match.action_id == "whatsapp_search")
+        is_wa_open = (match is not None and match.action_id == "open_whatsapp")
+
+        # Determine log and notification display text (redact at source for privacy)
+        if is_wa_search and match.extracted_name and self.config.privacy.redact_names_in_logs:
+            redacted_name = f"<name: {len(match.extracted_name)} chars>"
+            log_text = re.sub(re.escape(match.extracted_name), redacted_name, tx_result.text, flags=re.IGNORECASE)
+        elif self._session_whatsapp_front and not self.config.privacy.keep_audio_when_whatsapp_front:
+            words = len(tx_result.text.split())
+            log_text = f"<redacted (WhatsApp active: {words} words)>"
+        else:
+            log_text = tx_result.text
+
+        # Audio file cleanup for WhatsApp commands or WhatsApp frontmost
+        if (is_wa_search or is_wa_open) and not self.config.privacy.keep_whatsapp_audio:
+            if session_result.audio_path and session_result.audio_path.exists():
+                try:
+                    session_result.audio_path.unlink()
+                except Exception as e:
+                    logger.debug("Failed to remove WhatsApp audio file: %s", e)
+        elif self._session_whatsapp_front and not self.config.privacy.keep_audio_when_whatsapp_front:
+            if session_result.audio_path and session_result.audio_path.exists():
+                try:
+                    session_result.audio_path.unlink()
+                except Exception as e:
+                    logger.debug("Failed to remove WhatsApp-front audio file: %s", e)
 
         # Case A: No recognized rule
         if match is None:
@@ -828,8 +900,8 @@ class VoiceAssistantApp(rumps.App):
                 f"\n"
                 f"┌─────────────────────────────────────────────────────────\n"
                 f"│ [Command Unrecognized] No rule matched\n"
-                f"│ Utterance:        \"{tx_result.text}\"\n"
-                f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path else 'None'}\n"
+                f"│ Utterance:        \"{log_text}\"\n"
+                f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Deleted (Privacy)'}\n"
                 f"├─────────────────────────────────────────────────────────\n"
                 f"│ Latency Breakdown:\n"
                 f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
@@ -844,7 +916,7 @@ class VoiceAssistantApp(rumps.App):
 
             logger.info(
                 "[Command Unrecognized] \"%s\" | Silence: %.2fs | Tx: %.3fs | Rule: %.4fs | Total: %.3fs",
-                tx_result.text,
+                log_text,
                 silence_wait_sec,
                 tx_result.processing_time_sec,
                 rule_match_time_sec,
@@ -855,7 +927,7 @@ class VoiceAssistantApp(rumps.App):
                 rumps.notification(
                     title="Voice Assistant",
                     subtitle="Command Unrecognized",
-                    message=f'Heard: "{tx_result.text}" (Nothing recognized)',
+                    message=f'Heard: "{log_text}" (Nothing recognized)',
                 )
             except Exception as e:
                 logger.debug("Could not display notification: %s", e)
@@ -865,7 +937,7 @@ class VoiceAssistantApp(rumps.App):
         if match.action_id == "take_note":
             logger.info(
                 "[Command Matched: take_note] \"%s\" | Silence: %.2fs | Tx: %.3fs | Rule: %.4fs",
-                tx_result.text,
+                log_text,
                 silence_wait_sec,
                 tx_result.processing_time_sec,
                 rule_match_time_sec,
@@ -884,7 +956,53 @@ class VoiceAssistantApp(rumps.App):
             run_on_main_thread(_start_note)
             return
 
-        # Case C: open_notes (or other command) matched
+        # Case C: open_whatsapp command matched
+        if match.action_id == "open_whatsapp":
+            if self.overlay is not None:
+                self.overlay.show_whatsapp_opening()
+
+            def _on_wa_open_done(act_res: WhatsAppActionResult):
+                run_on_main_thread(
+                    lambda: self._handle_whatsapp_action_result(
+                        act_res,
+                        match,
+                        tx_result,
+                        session_result,
+                        rule_match_time_sec,
+                        log_text,
+                    )
+                )
+
+            open_whatsapp_async(callback=_on_wa_open_done)
+            return
+
+        # Case D: whatsapp_search command matched
+        if match.action_id == "whatsapp_search":
+            extracted_name = match.extracted_name or ""
+            if self.overlay is not None:
+                self.overlay.show_whatsapp_searching(extracted_name)
+
+            def _on_wa_search_done(act_res: WhatsAppActionResult):
+                run_on_main_thread(
+                    lambda: self._handle_whatsapp_action_result(
+                        act_res,
+                        match,
+                        tx_result,
+                        session_result,
+                        rule_match_time_sec,
+                        log_text,
+                    )
+                )
+
+            search_whatsapp_async(
+                extracted_name,
+                callback=_on_wa_search_done,
+                clipboard_restore_delay_ms=self.config.dictation.clipboard_restore_delay_ms,
+                modifier_release_timeout_ms=self.config.dictation.modifier_release_timeout_ms,
+            )
+            return
+
+        # Case E: open_notes (or other command) matched
         if self.overlay is not None:
             self.overlay.show_action_start(tx_result.text, "Opening Notes...")
 
@@ -897,6 +1015,7 @@ class VoiceAssistantApp(rumps.App):
                     tx_result,
                     session_result,
                     rule_match_time_sec,
+                    log_text,
                 )
             )
 
@@ -906,6 +1025,94 @@ class VoiceAssistantApp(rumps.App):
             timeout_sec=5.0,
         )
 
+    def _handle_whatsapp_action_result(
+        self,
+        act_res: WhatsAppActionResult,
+        match: CommandMatch,
+        tx_result: TranscriptionResult,
+        session_result: SessionResult,
+        rule_match_time_sec: float,
+        log_text: str,
+    ) -> None:
+        """Handle completion of a WhatsApp action on main thread."""
+        if act_res.success:
+            if self.overlay is not None:
+                if match.action_id == "open_whatsapp":
+                    self.overlay.show_whatsapp_ready()
+                else:
+                    self.overlay.show_whatsapp_search_success(match.extracted_name)
+        else:
+            if self.overlay is not None:
+                err_msg = act_res.error or act_res.message
+                if "UI isn't readable" in err_msg or "Main window not found" in err_msg or "Search field not found" in err_msg:
+                    self.overlay.show_whatsapp_ui_unreadable()
+                elif "Couldn't reach" in err_msg:
+                    self.overlay.show_whatsapp_unresponsive()
+                elif "isn't in front" in err_msg:
+                    self.overlay.show_whatsapp_not_front()
+                elif "Couldn't focus" in err_msg:
+                    self.overlay.show_whatsapp_focus_failed()
+                elif match.action_id == "open_whatsapp":
+                    self.overlay.show_whatsapp_open_failed(err_msg)
+                else:
+                    self.overlay.show_error(err_msg)
+
+        silence_wait_sec = (
+            session_result.trailing_silence_sec
+            if session_result.trailing_silence_sec > 0.0
+            else self.config.timeouts.command_silence_sec
+        )
+        decision_to_wa_sec = (
+            (time.monotonic() - session_result.auto_stop_time)
+            if session_result.auto_stop_time > 0.0
+            else (tx_result.processing_time_sec + rule_match_time_sec + act_res.execution_time_sec)
+        )
+        speech_to_wa_sec = silence_wait_sec + decision_to_wa_sec
+
+        status_str = "SUCCESS" if act_res.success else f"FAILED ({act_res.error or act_res.message})"
+        print(
+            f"\n"
+            f"┌─────────────────────────────────────────────────────────\n"
+            f"│ [Command Executed] \"{match.action_id}\" -> {status_str}\n"
+            f"│ Utterance:        \"{log_text}\"\n"
+            f"│ Action Message:   {act_res.message}\n"
+            f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Deleted (Privacy)'}\n"
+            f"├─────────────────────────────────────────────────────────\n"
+            f"│ Latency Breakdown:\n"
+            f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
+            f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s\n"
+            f"│ • Rule Matching:  {rule_match_time_sec:.4f} s\n"
+            f"│ • Action Exec:    {act_res.execution_time_sec:.4f} s (Keys posted: {act_res.keys_posted})\n"
+            f"│ ────────────────────────────────────────────────────────\n"
+            f"│ Total Latency:    {decision_to_wa_sec:.3f} s\n"
+            f"└─────────────────────────────────────────────────────────\n",
+            flush=True,
+        )
+
+        logger.info(
+            "[Command: %s] %s | Utterance: \"%s\" | Silence: %.2fs | Tx: %.3fs | Rule: %.4fs | Action: %.3fs | Total: %.3fs",
+            match.action_id,
+            "OK" if act_res.success else "FAIL",
+            log_text,
+            silence_wait_sec,
+            tx_result.processing_time_sec,
+            rule_match_time_sec,
+            act_res.execution_time_sec,
+            decision_to_wa_sec,
+        )
+
+        try:
+            subtitle = "WhatsApp Ready" if (act_res.success and match.action_id == "open_whatsapp") else (
+                "WhatsApp Search" if act_res.success else "Command Failed"
+            )
+            rumps.notification(
+                title="Voice Assistant",
+                subtitle=subtitle,
+                message=f'Heard: "{log_text}" → {act_res.message}',
+            )
+        except Exception as e:
+            logger.debug("Could not display notification: %s", e)
+
     def _handle_action_result(
         self,
         act_res: ActionResult,
@@ -913,8 +1120,10 @@ class VoiceAssistantApp(rumps.App):
         tx_result: TranscriptionResult,
         session_result: SessionResult,
         rule_match_time_sec: float,
+        log_text: Optional[str] = None,
     ) -> None:
         """Handle completion of an action on main thread."""
+        display_text = log_text if log_text is not None else tx_result.text
         if act_res.success:
             if self.overlay is not None:
                 self.overlay.show_action_success(tx_result.text, act_res.message)
@@ -940,9 +1149,9 @@ class VoiceAssistantApp(rumps.App):
             f"\n"
             f"┌─────────────────────────────────────────────────────────\n"
             f"│ [Command Executed] \"{match.action_id}\" -> {status_str}\n"
-            f"│ Utterance:        \"{tx_result.text}\"\n"
+            f"│ Utterance:        \"{display_text}\"\n"
             f"│ Action Message:   {act_res.message}\n"
-            f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path else 'None'}\n"
+            f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'None'}\n"
             f"├─────────────────────────────────────────────────────────\n"
             f"│ Latency Breakdown:\n"
             f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
@@ -973,7 +1182,7 @@ class VoiceAssistantApp(rumps.App):
             rumps.notification(
                 title="Voice Assistant",
                 subtitle=subtitle,
-                message=f'Heard: "{tx_result.text}" → {act_res.message}',
+                message=f'Heard: "{display_text}" → {act_res.message}',
             )
         except Exception as e:
             logger.debug("Could not display notification: %s", e)

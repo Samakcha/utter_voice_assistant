@@ -50,7 +50,9 @@ def test_high_risk_action_requires_confirmation(monkeypatch):
     assert res_confirmed.message == "Sent"
 
 
-def test_execute_action_async():
+def test_execute_action_async(monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: MagicMock(returncode=0))
     done_event = threading.Event()
     received_result = None
 

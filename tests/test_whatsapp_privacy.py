@@ -333,3 +333,174 @@ def test_runloop_pump_in_polling_loops():
     source = EXPERIMENT_PATH.read_text(encoding="utf-8")
     assert "NSRunLoop.currentRunLoop().runUntilDate_" in source
     assert source.count("NSRunLoop.currentRunLoop().runUntilDate_") >= 4
+
+
+def test_whatsapp_production_modules_source_privacy():
+    """Verify production modules interface/whatsapp_control.py and whatsapp_ax.py do not query content attributes."""
+    control_path = PROJECT_ROOT / "interface" / "whatsapp_control.py"
+    ax_path = PROJECT_ROOT / "interface" / "whatsapp_ax.py"
+    assert control_path.is_file(), f"Missing {control_path}"
+    assert ax_path.is_file(), f"Missing {ax_path}"
+
+    for path in [control_path, ax_path]:
+        source = path.read_text(encoding="utf-8")
+        for attr in FORBIDDEN_CONTENT_ATTRIBUTES:
+            assert attr not in source, f"PRIVACY VIOLATION in {path.name}: Found '{attr}'"
+        assert "kAXTitleAttribute" not in source, f"PRIVACY VIOLATION in {path.name}: Found 'kAXTitleAttribute'"
+
+
+def test_whatsapp_production_modules_never_send_rule():
+    """
+    Verify production modules strictly forbid keycode 36 (Return) and any non-whitelisted keys.
+    Key whitelist is ONLY {3 (Cmd+F), 9 (Cmd+V)}.
+    """
+    from interface.whatsapp_control import ALLOWED_WHATSAPP_KEYCODES, post_whatsapp_key
+
+    assert ALLOWED_WHATSAPP_KEYCODES == {3, 9}, (
+        f"Key whitelist violation: Expected {{3, 9}}, got {ALLOWED_WHATSAPP_KEYCODES}"
+    )
+
+    control_path = PROJECT_ROOT / "interface" / "whatsapp_control.py"
+    ax_path = PROJECT_ROOT / "interface" / "whatsapp_ax.py"
+
+    for path in [control_path, ax_path]:
+        source = path.read_text(encoding="utf-8")
+        assert "kVK_Return" not in source, f"NEVER-SEND VIOLATION in {path.name}: kVK_Return found"
+
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value == 36:
+                pytest.fail(f"NEVER-SEND VIOLATION in {path.name}: Keycode 36 found at line {node.lineno}")
+
+    # Verify post_whatsapp_key rejects non-whitelisted keys (e.g. Return=36, Delete=51, Esc=53, Arrow keys)
+    for forbidden_key in [36, 51, 53, 0, 123, 124, 125, 126]:
+        with pytest.raises(AssertionError):
+            post_whatsapp_key(forbidden_key)
+
+
+def test_redaction_at_source_in_app(monkeypatch, caplog, capsys):
+    """
+    CRITICAL PRIVACY TEST:
+    Verify that for a whatsapp_search match, the target name is redacted AT THE SOURCE
+    and appears NOWHERE in logs, stdout, or macOS notifications.
+    """
+    import logging
+    from unittest.mock import MagicMock
+    from engine.config import load_config
+    from engine.models import EndReason, SessionMode, SessionResult, TranscriptionResult
+    from interface.app import VoiceAssistantApp
+
+    notifications_sent = []
+
+    def mock_notification(title, subtitle, message):
+        notifications_sent.append({"title": title, "subtitle": subtitle, "message": message})
+
+    monkeypatch.setattr("rumps.notification", mock_notification)
+
+    from interface.whatsapp_control import WhatsAppActionResult
+
+    def mock_search_wa(name, callback, **kwargs):
+        # Invoke completion immediately
+        callback(WhatsAppActionResult(success=True, message="Done searching"))
+
+    monkeypatch.setattr("interface.app.search_whatsapp_async", mock_search_wa)
+
+    config = load_config()
+    mock_sm = MagicMock()
+    mock_sm.is_listening = False
+    mock_sm.current_mode = SessionMode.COMMAND
+
+    app = VoiceAssistantApp(config=config, session_manager=mock_sm, transcriber=None)
+
+    fake_name = "SecretPersonName"
+    utterance = f"search for {fake_name}"
+    tx_res = TranscriptionResult(text=utterance, language="en", audio_duration_sec=1.5, processing_time_sec=0.2)
+    session_res = SessionResult(
+        mode=SessionMode.COMMAND,
+        end_reason=EndReason.SILENCE,
+        duration_sec=2.0,
+        audio_path=None,
+        speech_detected=True,
+        sample_rate=16000,
+        total_samples=32000,
+        session_id="test-privacy-session",
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        app._on_transcription_success(tx_res, session_res)
+
+    captured = capsys.readouterr()
+
+    # 1. Assert fake_name is NOT in logger records
+    assert fake_name not in caplog.text, f"Name leaked in logger output: {caplog.text}"
+
+    # 2. Assert fake_name is NOT in stdout
+    assert fake_name not in captured.out, f"Name leaked in stdout print: {captured.out}"
+    assert fake_name not in captured.err, f"Name leaked in stderr: {captured.err}"
+
+    # 3. Assert fake_name is NOT in rumps notifications
+    for n in notifications_sent:
+        assert fake_name not in n["title"], f"Name leaked in notification title: {n}"
+        assert fake_name not in n["subtitle"], f"Name leaked in notification subtitle: {n}"
+        assert fake_name not in n["message"], f"Name leaked in notification message: {n}"
+
+    # 4. Assert redacted placeholder appears
+    expected_placeholder = f"<name: {len(fake_name)} chars>"
+    assert expected_placeholder in caplog.text or expected_placeholder in captured.out
+
+
+def test_dictation_into_whatsapp_redacted_when_whatsapp_front(monkeypatch, caplog, capsys, tmp_path):
+    """
+    Verify that when WhatsApp is frontmost during dictation,
+    the dictated text is redacted from logs, word count only is reported,
+    and audio file is deleted when keep_audio_when_whatsapp_front is False.
+    """
+    import logging
+    from unittest.mock import MagicMock
+    from engine.config import load_config
+    from engine.models import EndReason, SessionMode, SessionResult
+    from interface.app import VoiceAssistantApp
+
+    monkeypatch.setattr("interface.app.paste_and_restore", lambda text, config, on_complete: on_complete(True))
+
+    config = load_config()
+    # keep_audio_when_whatsapp_front is False by default in load_config()
+    assert config.privacy.keep_audio_when_whatsapp_front is False
+    mock_sm = MagicMock()
+
+    app = VoiceAssistantApp(config=config, session_manager=mock_sm, transcriber=None)
+    app._session_whatsapp_front = True
+
+    # Create dummy audio file
+    dummy_wav = tmp_path / "dictation_whatsapp.wav"
+    dummy_wav.write_bytes(b"RIFFdummydata")
+    assert dummy_wav.exists()
+
+    session_res = SessionResult(
+        mode=SessionMode.DICTATION,
+        end_reason=EndReason.HOTKEY,
+        duration_sec=3.0,
+        audio_path=dummy_wav,
+        speech_detected=True,
+        sample_rate=16000,
+        total_samples=48000,
+        session_id="wa-dictation-test",
+    )
+
+    secret_message = "SuperSecretWhatsAppPrivateChatDetails"
+    app._dictation_session_id = "wa-dictation-test"
+    app._dictation_chunks[0] = secret_message
+    app._dictation_latencies[0] = 0.3
+    app._dictation_session_result = session_res
+
+    with caplog.at_level(logging.DEBUG):
+        app._finalize_dictation_insertion("wa-dictation-test")
+
+    captured = capsys.readouterr()
+
+    # Verify secret message is NOT in logs or stdout
+    assert secret_message not in caplog.text, "Dictated secret message leaked in logger!"
+    assert secret_message not in captured.out, "Dictated secret message leaked in stdout!"
+
+    # Verify audio file was deleted
+    assert not dummy_wav.exists(), "Audio file was not deleted for WhatsApp frontmost dictation!"

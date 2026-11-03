@@ -19,12 +19,17 @@ TRANSIENT_TYPE = "org.nspasteboard.TransientType"
 CONCEALED_TYPE = "org.nspasteboard.ConcealedType"
 
 
+def get_general_pasteboard() -> AppKit.NSPasteboard:
+    """Return the general NSPasteboard (or isolated test pasteboard during testing)."""
+    return AppKit.NSPasteboard.generalPasteboard()
+
+
 def take_pasteboard_snapshot(pasteboard: Optional[AppKit.NSPasteboard] = None) -> ClipboardSnapshot:
     """
     Take a full snapshot of all items and data types currently on the NSPasteboard.
     Saves raw NSData for every UTI type present on each item.
     """
-    pb = pasteboard or AppKit.NSPasteboard.generalPasteboard()
+    pb = pasteboard or get_general_pasteboard()
     change_count = pb.changeCount()
     saved_items = []
 
@@ -48,7 +53,7 @@ def write_dictation_to_pasteboard(
     Write dictated text to NSPasteboard, accompanied by transient and concealed markers.
     Returns the new changeCount after writing.
     """
-    pb = pasteboard or AppKit.NSPasteboard.generalPasteboard()
+    pb = pasteboard or get_general_pasteboard()
     pb.clearContents()
 
     item = AppKit.NSPasteboardItem.alloc().init()
@@ -76,7 +81,7 @@ def restore_pasteboard_snapshot(
     Returns:
         True if restored, False if skipped due to changeCount mismatch.
     """
-    pb = pasteboard or AppKit.NSPasteboard.generalPasteboard()
+    pb = pasteboard or get_general_pasteboard()
     current_count = pb.changeCount()
 
     if current_count != expected_change_count:
@@ -150,7 +155,7 @@ def paste_and_restore(
             on_complete(False)
         return
 
-    pb = pasteboard or AppKit.NSPasteboard.generalPasteboard()
+    pb = pasteboard or get_general_pasteboard()
 
     # 1. Take snapshot of existing clipboard
     snapshot = take_pasteboard_snapshot(pb)

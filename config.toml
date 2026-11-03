@@ -112,3 +112,14 @@ reveal_after_save = false
 
 # Whether to play a short ready sound when the note recording stream is confirmed open
 ready_sound = true
+
+[privacy]
+# Whether to redact contact and search names in logs, terminal stdout, and system notifications
+redact_names_in_logs = true
+
+# Whether to keep recording audio files of WhatsApp voice commands
+keep_whatsapp_audio = false
+
+# When WhatsApp is frontmost during dictation or notes, whether to keep the audio recording
+keep_audio_when_whatsapp_front = false
+

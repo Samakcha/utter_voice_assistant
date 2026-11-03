@@ -72,7 +72,7 @@ POSITIVE_PHRASES = [
 
 NEGATIVE_PHRASES = [
     # Explicitly requested negative phrases
-    "open notes and send it to Rahul",
+    "open notes and send it to Alex Test",
     "why did you open notes",
     "do you open notes",
     "notes open",
@@ -111,7 +111,7 @@ NEGATIVE_PHRASES = [
     "open safari",
     "launch terminal",
     "hello how are you",
-    "send message to Rahul on WhatsApp",
+    "send message to Alex Test on WhatsApp",
     "please don't open notes",
     "I really like taking notes in Apple Notes",
     "is notes open",
@@ -123,7 +123,7 @@ NEGATIVE_PHRASES = [
     "don't take notes",
     "do not take notes",
     "start taking notes on the lecture",
-    "create a note about Rahul",
+    "create a note about Alex Test",
     "open notes and take a note",
     "take a note of what he said",
     "can you take notes from this call",
@@ -141,6 +141,43 @@ NEGATIVE_PHRASES = [
     "please don't take notes",
     "why do you take notes",
     "take a note app",
+    # WhatsApp search negative phrases (must never match)
+    "search for the doctor",
+    "search for a person",
+    "search for an agent",
+    "search for my mom",
+    "search notes",
+    "search for note",
+    "search whatsapp",
+    "search for chat",
+    "search for app",
+    "search for whatsapp",
+    "find notes",
+    "find the",
+    "search for one two three four five",
+    "find a b c d e",
+    "search for John 2",
+    "find agent 007",
+    "search for 123",
+    "find room 404",
+    "search for",
+    "find",
+    "search whatsapp for",
+    "search",
+    "send a message to Alex Test",
+    "call Alex Test on whatsapp",
+    "open whatsapp and search Alex Test",
+    "search Google for Alex Test",
+    "search files for notes",
+    "find my keys",
+    "search for the meaning of life",
+    "don't search for Alex Test",
+    "do not find Alex Test",
+    "why search for Alex Test",
+    "I searched for Alex Test yesterday",
+    "searching for Alex Test",
+    "search for @alextest",
+    "search for Alex Test #1",
 ]
 
 TAKE_NOTE_POSITIVE_PHRASES = [
@@ -189,6 +226,81 @@ TAKE_NOTE_POSITIVE_PHRASES = [
     "Please take a note!",
 ]
 
+OPEN_WHATSAPP_POSITIVE_PHRASES = [
+    "open whatsapp",
+    "open WhatsApp",
+    "launch whatsapp",
+    "launch WhatsApp",
+    "bring up whatsapp",
+    "bring up WhatsApp",
+    "open the whatsapp app",
+    "open the WhatsApp app",
+    "launch the whatsapp app",
+    "bring up the whatsapp app",
+    "open up whatsapp",
+    "open up the whatsapp app",
+    "launch my whatsapp",
+    "bring up my whatsapp",
+    "open my whatsapp app",
+    "can you open whatsapp",
+    "could you open whatsapp",
+    "would you launch whatsapp",
+    "please open whatsapp",
+    "please open the whatsapp app",
+    "just open whatsapp",
+    "kindly launch whatsapp",
+    "hey open whatsapp",
+    "hi can you open whatsapp",
+    "hello please bring up whatsapp",
+    "go ahead and open whatsapp",
+    "open whatsapp please",
+    "open whatsapp for me",
+    "Open WhatsApp.",
+    "Launch WhatsApp!",
+    "Can you open WhatsApp?",
+    "Could you please launch the whatsapp app?",
+]
+
+WHATSAPP_SEARCH_POSITIVE_PHRASES = [
+    ("search for Alex Test", "Alex Test"),
+    ("search for Sam Example", "Sam Example"),
+    ("search for Jane Mock", "Jane Mock"),
+    ("search for Charlie Fake", "Charlie Fake"),
+    ("search Robin Sample", "Robin Sample"),
+    ("search Pat Placeholder", "Pat Placeholder"),
+    ("search Dr Test", "Dr Test"),
+    ("search Taylor Dummy", "Taylor Dummy"),
+    ("find Jordan Test", "Jordan Test"),
+    ("find Morgan Example", "Morgan Example"),
+    ("find Casey Mock", "Casey Mock"),
+    ("find Jamie Fake", "Jamie Fake"),
+    ("search whatsapp for Avery Sample", "Avery Sample"),
+    ("search whatsapp for Alex Test", "Alex Test"),
+    ("search whatsapp for Quinn Placeholder", "Quinn Placeholder"),
+    ("find Riley Test on whatsapp", "Riley Test"),
+    ("find Dakota Example on whatsapp", "Dakota Example"),
+    ("find Reese Mock on whatsapp", "Reese Mock"),
+    ("search for Renée Test", "Renée Test"),
+    ("search for José Example", "José Example"),
+    ("search for François Mock", "François Mock"),
+    ("search for राहुल टेस्ट", "राहुल टेस्ट"),
+    ("search for नमूना शर्मा", "नमूना शर्मा"),
+    ("find परीक्षण कुमार सिंह", "परीक्षण कुमार सिंह"),
+    ("search whatsapp for सीता नमूना", "सीता नमूना"),
+    ("find अमित टेस्ट on whatsapp", "अमित टेस्ट"),
+    ("search for O'Test Example", "O'Test Example"),
+    ("find Anne-Marie Mock", "Anne-Marie Mock"),
+    ("search for Mary-Jane Test", "Mary-Jane Test"),
+    ("search for John A Test", "John A Test"),
+    ("find David B Example", "David B Example"),
+    ("Search for Alex Test.", "Alex Test"),
+    ("Find Sam Example!", "Sam Example"),
+    ("Search whatsapp for Jane Mock...", "Jane Mock"),
+    ("Can you search for Charlie Fake?", "Charlie Fake"),
+    ("Please find Robin Sample on whatsapp.", "Robin Sample"),
+    ("Could you please search for Sarah J Mock?", "Sarah J Mock"),
+]
+
 
 @pytest.mark.parametrize("phrase", POSITIVE_PHRASES)
 def test_match_command_open_notes_positive(phrase: str):
@@ -210,6 +322,49 @@ def test_match_command_take_note_positive(phrase: str):
     assert match.action_id == "take_note"
     assert match.matched_variant == "take_note"
     assert len(match.normalized_text) > 0
+
+
+@pytest.mark.parametrize("phrase", OPEN_WHATSAPP_POSITIVE_PHRASES)
+def test_match_command_open_whatsapp_positive(phrase: str):
+    """Verify that every valid phrasing maps cleanly to 'open_whatsapp'."""
+    match = match_command(phrase)
+    assert match is not None, f"Failed to match valid open_whatsapp phrase: '{phrase}'"
+    assert isinstance(match, CommandMatch)
+    assert match.action_id == "open_whatsapp"
+    assert match.matched_variant == "open_whatsapp"
+    assert len(match.normalized_text) > 0
+
+
+@pytest.mark.parametrize("phrase,expected_name", WHATSAPP_SEARCH_POSITIVE_PHRASES)
+def test_match_command_whatsapp_search_positive(phrase: str, expected_name: str):
+    """Verify that every valid search phrasing maps cleanly to 'whatsapp_search' with extracted name."""
+    match = match_command(phrase)
+    assert match is not None, f"Failed to match valid whatsapp_search phrase: '{phrase}'"
+    assert isinstance(match, CommandMatch)
+    assert match.action_id == "whatsapp_search"
+    assert match.matched_variant == "whatsapp_search"
+    assert match.extracted_name == expected_name
+
+
+def test_extracted_name_validation():
+    """Verify validate_extracted_name rules strictly."""
+    from engine.commands import validate_extracted_name
+    assert validate_extracted_name("Alex Test") == "Alex Test"
+    assert validate_extracted_name("राहुल टेस्ट") == "राहुल टेस्ट"
+    assert validate_extracted_name("John A Test") == "John A Test"
+    assert validate_extracted_name("O'Test") == "O'Test"
+    assert validate_extracted_name("Mary-Jane Mock") == "Mary-Jane Mock"
+    assert validate_extracted_name("Sam Example.") == "Sam Example"
+    # Rejections
+    assert validate_extracted_name("the doctor") is None
+    assert validate_extracted_name("a friend") is None
+    assert validate_extracted_name("my mom") is None
+    assert validate_extracted_name("whatsapp") is None
+    assert validate_extracted_name("notes") is None
+    assert validate_extracted_name("123") is None
+    assert validate_extracted_name("John 2") is None
+    assert validate_extracted_name("one two three four five") is None
+    assert validate_extracted_name("") is None
 
 
 @pytest.mark.parametrize("phrase", NEGATIVE_PHRASES)

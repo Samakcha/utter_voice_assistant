@@ -51,7 +51,7 @@ open node,open_notes
 launch the note,open_notes
 can you open the note app,open_notes
 Open the Note App.,open_notes
-open notes and send it to Rahul,none
+open notes and send it to Alex Test,none
 why did you open notes,none
 do you open notes,none
 notes open,none
@@ -89,7 +89,7 @@ quit notes,none
 open safari,none
 launch terminal,none
 hello how are you,none
-send message to Rahul on WhatsApp,none
+send message to Alex Test on WhatsApp,none
 please don't open notes,none
 is notes open,none
 start taking a note,take_note
@@ -134,7 +134,7 @@ take a note of that,none
 don't take notes,none
 do not take notes,none
 start taking notes on the lecture,none
-create a note about Rahul,none
+create a note about Alex Test,none
 open notes and take a note,none
 take a note of what he said,none
 can you take notes from this call,none
@@ -151,3 +151,108 @@ start taking notes about biology,none
 begin taking notes on project,none
 please don't take notes,none
 why do you take notes,none
+open whatsapp,open_whatsapp
+open WhatsApp,open_whatsapp
+launch whatsapp,open_whatsapp
+launch WhatsApp,open_whatsapp
+bring up whatsapp,open_whatsapp
+bring up WhatsApp,open_whatsapp
+open the whatsapp app,open_whatsapp
+open the WhatsApp app,open_whatsapp
+launch the whatsapp app,open_whatsapp
+bring up the whatsapp app,open_whatsapp
+open up whatsapp,open_whatsapp
+open up the whatsapp app,open_whatsapp
+launch my whatsapp,open_whatsapp
+bring up my whatsapp,open_whatsapp
+open my whatsapp app,open_whatsapp
+can you open whatsapp,open_whatsapp
+could you open whatsapp,open_whatsapp
+would you launch whatsapp,open_whatsapp
+please open whatsapp,open_whatsapp
+please open the whatsapp app,open_whatsapp
+just open whatsapp,open_whatsapp
+kindly launch whatsapp,open_whatsapp
+hey open whatsapp,open_whatsapp
+hi can you open whatsapp,open_whatsapp
+hello please bring up whatsapp,open_whatsapp
+go ahead and open whatsapp,open_whatsapp
+open whatsapp please,open_whatsapp
+open whatsapp for me,open_whatsapp
+Open WhatsApp.,open_whatsapp
+Launch WhatsApp!,open_whatsapp
+Can you open WhatsApp?,open_whatsapp
+Could you please launch the whatsapp app?,open_whatsapp
+search for Alex Test,whatsapp_search
+search for Sam Example,whatsapp_search
+search for Jane Mock,whatsapp_search
+search for Charlie Fake,whatsapp_search
+search Robin Sample,whatsapp_search
+search Pat Placeholder,whatsapp_search
+search Dr Test,whatsapp_search
+search Taylor Dummy,whatsapp_search
+find Jordan Test,whatsapp_search
+find Morgan Example,whatsapp_search
+find Casey Mock,whatsapp_search
+find Jamie Fake,whatsapp_search
+search whatsapp for Avery Sample,whatsapp_search
+search whatsapp for Alex Test,whatsapp_search
+search whatsapp for Quinn Placeholder,whatsapp_search
+find Riley Test on whatsapp,whatsapp_search
+find Dakota Example on whatsapp,whatsapp_search
+find Reese Mock on whatsapp,whatsapp_search
+search for Renée Test,whatsapp_search
+search for José Example,whatsapp_search
+search for François Mock,whatsapp_search
+search for राहुल टेस्ट,whatsapp_search
+search for नमूना शर्मा,whatsapp_search
+find परीक्षण कुमार सिंह,whatsapp_search
+search whatsapp for सीता नमूना,whatsapp_search
+find अमित टेस्ट on whatsapp,whatsapp_search
+search for O'Test Example,whatsapp_search
+find Anne-Marie Mock,whatsapp_search
+search for Mary-Jane Test,whatsapp_search
+search for John A Test,whatsapp_search
+find David B Example,whatsapp_search
+Search for Alex Test.,whatsapp_search
+Find Sam Example!,whatsapp_search
+Search whatsapp for Jane Mock...,whatsapp_search
+Can you search for Charlie Fake?,whatsapp_search
+Please find Robin Sample on whatsapp.,whatsapp_search
+Could you please search for Sarah J Mock?,whatsapp_search
+search for the doctor,none
+search for a person,none
+search for an agent,none
+search for my mom,none
+search notes,none
+search for note,none
+search whatsapp,none
+search for chat,none
+search for app,none
+search for whatsapp,none
+find notes,none
+find the,none
+search for one two three four five,none
+find a b c d e,none
+search for John 2,none
+find agent 007,none
+search for 123,none
+find room 404,none
+search for,none
+find,none
+search whatsapp for,none
+search,none
+send a message to Alex Test,none
+call Alex Test on whatsapp,none
+open whatsapp and search Alex Test,none
+search Google for Alex Test,none
+search files for notes,none
+find my keys,none
+search for the meaning of life,none
+don't search for Alex Test,none
+do not find Alex Test,none
+why search for Alex Test,none
+I searched for Alex Test yesterday,none
+searching for Alex Test,none
+search for @alextest,none
+search for Alex Test #1,none

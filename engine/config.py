@@ -77,6 +77,13 @@ class NotesConfig:
 
 
 @dataclass(frozen=True)
+class PrivacyConfig:
+    redact_names_in_logs: bool = True
+    keep_whatsapp_audio: bool = False
+    keep_audio_when_whatsapp_front: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
     timeouts: TimeoutsConfig
@@ -87,6 +94,7 @@ class AppConfig:
     normalization: NormalizationConfig
     dictation: DictationConfig
     notes: NotesConfig
+    privacy: PrivacyConfig = PrivacyConfig()
 
 
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
@@ -141,6 +149,13 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ready_sound=bool(notes_data.get("ready_sound", True)),
     )
 
+    privacy_data = data.get("privacy", {})
+    privacy = PrivacyConfig(
+        redact_names_in_logs=bool(privacy_data.get("redact_names_in_logs", True)),
+        keep_whatsapp_audio=bool(privacy_data.get("keep_whatsapp_audio", False)),
+        keep_audio_when_whatsapp_front=bool(privacy_data.get("keep_audio_when_whatsapp_front", False)),
+    )
+
     return AppConfig(
         hotkeys=HotkeysConfig(
             command_mode=data["hotkeys"]["command_mode"],
@@ -174,4 +189,5 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         normalization=normalization,
         dictation=dictation,
         notes=notes,
+        privacy=privacy,
     )
