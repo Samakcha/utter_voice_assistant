@@ -53,6 +53,9 @@ class SessionResult:
     # Captured audio held in memory (float32, mono). Lets command mode transcribe
     # without ever writing a WAV file when recordings aren't kept.
     audio: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
+    # True when a command session ended early because the speech so far was already
+    # recognized as a complete fixed command (SessionManager.finish_command_early).
+    early_finish: bool = False
 
     @property
     def was_quiet_cancel(self) -> bool:

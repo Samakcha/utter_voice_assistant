@@ -34,6 +34,7 @@ class SessionManager:
         on_session_start: Optional[Callable[[SessionMode], None]] = None,
         on_session_end: Optional[Callable[[SessionResult], None]] = None,
         on_dictation_chunk: Optional[Callable[[DictationChunk], None]] = None,
+        on_command_pause: Optional[Callable[[str, int, np.ndarray], None]] = None,
     ):
         self._config = config
         self._vad = vad or SileroVAD(
@@ -49,6 +50,9 @@ class SessionManager:
         self.on_session_start = on_session_start
         self.on_session_end = on_session_end
         self.on_dictation_chunk = on_dictation_chunk
+        # Command early finish: called (session_id, pause_id, audio_so_far) once per pause,
+        # after command_early_check_sec of silence. See finish_command_early().
+        self.on_command_pause = on_command_pause
 
         # Session state
         self._lock = threading.RLock()
@@ -60,6 +64,11 @@ class SessionManager:
         self._session_start_time: float = 0.0
         self._last_speech_time: Optional[float] = None
         self._audio_chunks: List[np.ndarray] = []
+
+        # Command early-finish state: pause_id counts pauses; in_pause is True only while
+        # the user has stayed silent since the latest reported pause.
+        self._command_pause_id: int = 0
+        self._command_in_pause: bool = False
 
         # Dictation chunking state
         self._dictation_chunk_index: int = 0
@@ -123,6 +132,8 @@ class SessionManager:
             self._audio_chunks = []
             self._session_start_time = time.monotonic()
             self._last_speech_time = None
+            self._command_pause_id = 0
+            self._command_in_pause = False
 
             # Dictation chunking state reset
             self._dictation_chunk_index = 0
@@ -150,6 +161,48 @@ class SessionManager:
                     logger.error("Error in on_session_start callback: %s", e, exc_info=True)
 
             return True
+
+    def finish_command_early(self, session_id: str, pause_id: int) -> Optional[SessionResult]:
+        """
+        End a command session before the full silence timeout, because the speech so far
+        was already recognized as a complete command.
+
+        Succeeds only if the same command session is still listening AND the user has not
+        spoken since that pause was reported; otherwise returns None and the session carries
+        on normally. Must not be called from the audio callback thread.
+        """
+        with self._lock:
+            if not (
+                self._is_active
+                and self._current_mode == SessionMode.COMMAND
+                and self._current_session_id == session_id
+                and self._command_in_pause
+                and self._command_pause_id == pause_id
+            ):
+                return None
+            now = time.monotonic()
+            self._is_active = False
+            self._current_mode = None
+            self._command_in_pause = False
+            chunks_to_save = list(self._audio_chunks)
+            self._audio_chunks = []
+            speech_detected = self._speech_detected
+            start_time = self._session_start_time
+            trailing_silence_sec = (now - self._last_speech_time) if self._last_speech_time is not None else 0.0
+
+        logger.info("Command mode: early finish after %.2fs of silence.", trailing_silence_sec)
+        # Finalize outside the lock (stopping the stream while holding it could deadlock)
+        return self._finalize_stop(
+            reason=EndReason.SILENCE,
+            mode=SessionMode.COMMAND,
+            chunks_to_save=chunks_to_save,
+            speech_detected=speech_detected,
+            start_time=start_time,
+            trailing_silence_sec=trailing_silence_sec,
+            auto_stop_time=now,
+            session_id=session_id,
+            early_finish=True,
+        )
 
     def cancel_session(self, reason: EndReason = EndReason.ESC) -> Optional[SessionResult]:
         """Cancel the current session immediately."""
@@ -222,6 +275,7 @@ class SessionManager:
         auto_stop_time: float = 0.0,
         session_id: str = "",
         final_dictation_chunk: Optional[DictationChunk] = None,
+        early_finish: bool = False,
     ) -> Optional[SessionResult]:
         """
         Stop the audio hardware stream, write WAV, prune old files,
@@ -287,6 +341,7 @@ class SessionManager:
                 trailing_silence_sec=trailing_silence_sec,
                 auto_stop_time=auto_stop_time,
                 audio=concatenated if concatenated.size else None,
+                early_finish=early_finish,
             )
 
             # 6. Log one structured line with full session details
@@ -348,6 +403,7 @@ class SessionManager:
         trailing_silence_sec = 0.0
         auto_stop_time = 0.0
         session_id = ""
+        command_pause: Optional[tuple] = None  # (session_id, pause_id, audio_so_far)
 
         with self._lock:
             if not self._is_active:
@@ -382,9 +438,25 @@ class SessionManager:
                     # Speech already detected: track trailing silence
                     if is_speech:
                         self._last_speech_time = now
+                        self._command_in_pause = False  # any pending early finish is now stale
                     else:
                         if self._last_speech_time is not None:
                             silence_duration = now - self._last_speech_time
+                            early_sec = self._config.timeouts.command_early_check_sec
+                            if (
+                                early_sec > 0.0
+                                and early_sec < self._config.timeouts.command_silence_sec
+                                and not self._command_in_pause
+                                and silence_duration >= early_sec
+                                and self.on_command_pause is not None
+                            ):
+                                self._command_in_pause = True
+                                self._command_pause_id += 1
+                                command_pause = (
+                                    self._current_session_id,
+                                    self._command_pause_id,
+                                    np.concatenate(self._audio_chunks),
+                                )
                             if silence_duration >= self._config.timeouts.command_silence_sec:
                                 logger.info("Command mode: trailing silence of %.2fs; auto-stopping.", silence_duration)
                                 session_to_stop = EndReason.SILENCE
@@ -493,6 +565,13 @@ class SessionManager:
                                 self._dictation_chunk_index += 1
                 self._dictation_chunk_frames = []
                 self._dictation_chunk_active = False
+
+        # Report a command pause outside the lock (the app transcribes it on its worker thread)
+        if command_pause is not None and session_to_stop is None and self.on_command_pause is not None:
+            try:
+                self.on_command_pause(*command_pause)
+            except Exception as e:
+                logger.error("Error in on_command_pause callback: %s", e, exc_info=True)
 
         # Emit dictation chunk to callback outside the lock
         if chunk_to_emit is not None and self.on_dictation_chunk is not None:

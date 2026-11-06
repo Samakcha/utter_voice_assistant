@@ -18,6 +18,9 @@ class TimeoutsConfig:
     command_silence_sec: float
     command_no_speech_sec: float
     dictation_silence_sec: float
+    # After this much silence, command mode transcribes in the background; a complete fixed
+    # command (no name in it) then runs without waiting for command_silence_sec. 0 turns it off.
+    command_early_check_sec: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -207,6 +210,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             command_silence_sec=float(data["timeouts"]["command_silence_sec"]),
             command_no_speech_sec=float(data["timeouts"]["command_no_speech_sec"]),
             dictation_silence_sec=float(data["timeouts"]["dictation_silence_sec"]),
+            command_early_check_sec=float(data["timeouts"].get("command_early_check_sec", 0.6)),
         ),
         audio=AudioConfig(
             sample_rate=int(data["audio"]["sample_rate"]),
