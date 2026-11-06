@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Working title:** TBD
-**Status:** v0.3.5 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4).
+**Status:** v0.3.6 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1).
 **Last updated:** 6 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -201,7 +201,7 @@ Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 549 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 565 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -233,9 +233,9 @@ voice-assistant/
                                actions, stop_phrases, chunk_joiner, insertion, notes_writer, vocabulary,
                                config, models
   interface/                   app, hotkeys, key_events, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
-  scripts/                     benchmark_whisper, eval_rules, test_notes_write,
+  scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, eval_rules, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       549 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       565 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
 
 ~/Library/Application Support/VoiceAssistant/
@@ -274,7 +274,7 @@ voice-assistant/
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 549 passing |
+| Automated tests | 565 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -284,6 +284,13 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 - **Safety net:** `conftest.py` blocks any test from posting real key events, performing real Accessibility actions, launching apps, touching the real clipboard, writing into the real data folder or reading the real word list.
 - **Manual acceptance checks** are written per step and run by the user on the real Mac, because the coding agent's shell usually lacks Microphone, Accessibility and Input Monitoring permission and cannot see the user's apps.
 - **Working agreement with the coding agent:** plan first and wait for approval; never report a pass for anything it could not actually run; never drive or inspect the user's WhatsApp from its own shell.
+
+### 10.1 Accuracy score on the user's own voice (`scripts/accuracy.py`)
+- **Record** (`uv run python scripts/accuracy.py record`): shows one sentence at a time and saves the audio together with the exact sentence, so no transcripts are typed by hand. 78 fixed sentences in five groups (22 commands including 4 that must do nothing, 26 short and 14 long dictation sentences, 6 with numbers, 10 with tech words) plus one sentence per word-list term (up to 12). About 20 minutes; skip, redo and quit at any point, and it resumes by sentence text. Takes that are under 0.6 s or quieter than −45 dBFS prompt a redo. The microphone opens only while recording and is always closed on quit or Ctrl+C.
+- **Score** (`uv run python scripts/accuracy.py score`): runs every recording through the app's own steps (the configured local model, normalization and silence guard; the word-list hint, echo strip and correction for dictation; no word list and the command rules for commands). Reports % of words right (word-weighted, punctuation and case ignored) per group, how many commands would have done the right thing (right action, right name, or nothing), how many word-list terms were spelled exactly, and the same dictation scored without the word list. It also lists the worst mistakes. Offline only.
+- **Storage:** recordings, the manifest and the reports go to `~/Library/Application Support/VoiceAssistant/accuracy/`, never the project folder; deleting that folder removes everything.
+- **Limits:** long sentences are scored whole, while the app splits dictation at pauses; number formatting ("10" vs "ten") counts as an error; the score is for the microphone used while recording.
+- **Checked on synthesized speech** (9 sentences, turbo): 98.1% of dictation words right; 3 of 4 commands right (the Mac voice's "WhatsApp" was heard as "Vharts app", a synthetic-voice quirk seen before). The real score needs the user's recordings.
 
 ## 11. Lessons learned (bugs found and fixed)
 
@@ -343,7 +350,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 
 1. Try hold-to-talk live: hold `Control + Option + D`, speak, let go (text pastes); tap it for toggle as before; check that holding it in a text field makes no beep and types nothing.
 2. Choose the next feature from section 14.
-3. Run a formal benchmark (the 30 to 50 phrase test set with `scripts/benchmark_whisper.py` and `scripts/eval_rules.py`) if numeric success criteria are wanted. First step: write reference transcripts for 20 to 30 existing recordings so the benchmark can report word error rate. New recordings need `keep_recordings = true` while collecting them.
+3. Record the accuracy set (10.1, about 20 minutes, with the microphone normally used for dictation) and run the score; use the worst mistakes to decide the next accuracy fix (word list entries, `hold_min_sec`, model or prompt changes). Re-score after any such change.
 4. Re-measure end of speech to action live with `large-v3-turbo` (fixed commands and WhatsApp search).
 5. Fill the personal word list with real names and terms and test it live; note any word it changed that it should not have.
 6. Decide whether WhatsApp search (command mode) should also use the word list for contact names.
