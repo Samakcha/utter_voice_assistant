@@ -30,6 +30,15 @@ def test_config_loading():
     assert isinstance(config.storage.recordings_dir, Path)
     assert config.storage.max_recordings_kept == 20
 
+    # Privacy: no audio kept by default, and personal data lives outside the project folder
+    project_root = Path(__file__).resolve().parent.parent
+    assert config.privacy.keep_recordings is False
+    for data_dir in (config.storage.recordings_dir, config.storage.note_backups_dir):
+        assert data_dir.is_absolute()
+        assert "~" not in str(data_dir)
+        assert project_root not in data_dir.parents, f"{data_dir} is inside the project folder"
+        assert "Library/Application Support/VoiceAssistant" in str(data_dir)
+
     # Whisper
     assert config.whisper.model_size == "large-v3-turbo"
     assert config.whisper.language == "en"

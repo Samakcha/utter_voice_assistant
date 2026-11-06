@@ -33,10 +33,24 @@ class VADConfig:
     min_speech_chunks: int
 
 
+# Per-user data lives outside the project folder, in the standard macOS location.
+DEFAULT_DATA_DIR = Path("~/Library/Application Support/VoiceAssistant")
+
+
+def _resolve_dir(value: str, project_root: Path) -> Path:
+    """Expand ~ and resolve relative paths against the project root."""
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (project_root / path).resolve()
+    return path
+
+
 @dataclass(frozen=True)
 class StorageConfig:
     recordings_dir: Path
     max_recordings_kept: int
+    # Failed-note text backups (never pruned)
+    note_backups_dir: Path = DEFAULT_DATA_DIR.expanduser() / "note_backups"
 
 
 @dataclass(frozen=True)
@@ -81,6 +95,9 @@ class PrivacyConfig:
     redact_names_in_logs: bool = True
     keep_whatsapp_audio: bool = False
     keep_audio_when_whatsapp_front: bool = False
+    # When False (default), session audio is never written to disk: it is transcribed
+    # from memory and discarded. Turn on only for debugging or building a benchmark set.
+    keep_recordings: bool = False
 
 
 @dataclass(frozen=True)
@@ -109,11 +126,15 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     with open(config_path, "rb") as f:
         data = tomllib.load(f)
 
-    # Resolve recordings directory relative to project root if it is a relative path
+    # Resolve storage directories (~ expanded; relative paths are relative to the project root)
     project_root = config_path.parent
-    recordings_dir = Path(data["storage"]["recordings_dir"])
-    if not recordings_dir.is_absolute():
-        recordings_dir = (project_root / recordings_dir).resolve()
+    storage_data = data.get("storage", {})
+    recordings_dir = _resolve_dir(
+        str(storage_data.get("recordings_dir", DEFAULT_DATA_DIR / "recordings")), project_root
+    )
+    note_backups_dir = _resolve_dir(
+        str(storage_data.get("note_backups_dir", DEFAULT_DATA_DIR / "note_backups")), project_root
+    )
 
     whisper_data = data.get("whisper", {})
     models_dir = Path(whisper_data.get("models_dir", "./models"))
@@ -154,6 +175,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         redact_names_in_logs=bool(privacy_data.get("redact_names_in_logs", True)),
         keep_whatsapp_audio=bool(privacy_data.get("keep_whatsapp_audio", False)),
         keep_audio_when_whatsapp_front=bool(privacy_data.get("keep_audio_when_whatsapp_front", False)),
+        keep_recordings=bool(privacy_data.get("keep_recordings", False)),
     )
 
     return AppConfig(
@@ -178,7 +200,8 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         ),
         storage=StorageConfig(
             recordings_dir=recordings_dir,
-            max_recordings_kept=int(data["storage"]["max_recordings_kept"]),
+            max_recordings_kept=int(storage_data.get("max_recordings_kept", 20)),
+            note_backups_dir=note_backups_dir,
         ),
         whisper=WhisperConfig(
             model_size=str(whisper_data.get("model_size", "small")),

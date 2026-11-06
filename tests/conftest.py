@@ -7,6 +7,8 @@ Ensures that across the ENTIRE test suite:
 4. subprocess calls to `open` (launching apps) or `lsappinfo` are intercepted and raise.
 5. get_general_pasteboard() is redirected to an isolated in-memory test pasteboard
    so the developer's real clipboard is NEVER read or modified by any test.
+6. No test may write recordings or note backups into the real user data folder
+   (~/Library/Application Support/VoiceAssistant).
 """
 
 import subprocess
@@ -94,3 +96,25 @@ def global_safety_net(monkeypatch):
     monkeypatch.setattr("interface.clipboard.get_general_pasteboard", lambda: test_pasteboard)
     monkeypatch.setattr("interface.whatsapp_control.get_general_pasteboard", lambda: test_pasteboard)
     monkeypatch.setattr("interface.app.get_general_pasteboard", lambda: test_pasteboard)
+
+
+# 6. Real user data folder: no test may write recordings or note backups into it.
+def _snapshot_real_data_dir():
+    from engine.config import DEFAULT_DATA_DIR
+    root = DEFAULT_DATA_DIR.expanduser()
+    if not root.exists():
+        return root, set()
+    return root, {p for p in root.rglob("*") if p.is_file()}
+
+
+@pytest.fixture(autouse=True)
+def real_data_dir_guard():
+    root, before = _snapshot_real_data_dir()
+    yield
+    _, after = _snapshot_real_data_dir()
+    created = after - before
+    if created:
+        pytest.fail(
+            f"SAFETY NET: test wrote into the real user data folder {root}: "
+            f"{sorted(str(p) for p in created)}. Point the test's storage paths at tmp_path."
+        )

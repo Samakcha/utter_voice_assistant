@@ -69,8 +69,9 @@ class SessionManager:
         self._dictation_trailing_silence_frames: int = 0
         self._dictation_pre_speech_ring_buffer: Deque[np.ndarray] = collections.deque(maxlen=10)
 
-        # Ensure recordings directory exists
-        self._config.storage.recordings_dir.mkdir(parents=True, exist_ok=True)
+        # Create the recordings directory only if recordings are kept
+        if self._config.privacy.keep_recordings:
+            self._config.storage.recordings_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def is_listening(self) -> bool:
@@ -255,18 +256,20 @@ class SessionManager:
             peak_dbfs, rms_dbfs = compute_audio_levels(concatenated)
             device_name = getattr(self._audio, "device_name", None) or AudioCapture.get_input_device_name()
 
-            # 3. Save recorded audio to WAV file
+            # 3. Save recorded audio to WAV file, only if recordings are kept
+            keep_recordings = self._config.privacy.keep_recordings
             audio_path: Optional[Path] = None
-            try:
-                audio_path = self._save_wav_file(chunks_to_save, mode, reason)
-            except Exception as e:
-                logger.error("Error saving WAV file: %s", e, exc_info=True)
+            if keep_recordings:
+                try:
+                    audio_path = self._save_wav_file(chunks_to_save, mode, reason)
+                except Exception as e:
+                    logger.error("Error saving WAV file: %s", e, exc_info=True)
 
-            # 4. Prune old recordings to keep within quota
-            try:
-                self._prune_recordings()
-            except Exception as e:
-                logger.error("Error pruning recordings: %s", e, exc_info=True)
+                # 4. Prune old recordings to keep within quota
+                try:
+                    self._prune_recordings()
+                except Exception as e:
+                    logger.error("Error pruning recordings: %s", e, exc_info=True)
 
             # 5. Build SessionResult
             result = SessionResult(
@@ -283,11 +286,14 @@ class SessionManager:
                 input_device=device_name,
                 trailing_silence_sec=trailing_silence_sec,
                 auto_stop_time=auto_stop_time,
+                audio=concatenated if concatenated.size else None,
             )
 
             # 6. Log one structured line with full session details
             if result.audio_path and result.audio_path.exists():
                 audio_info = f"Audio: {result.audio_path}"
+            elif not keep_recordings:
+                audio_info = "Audio: in memory only (not saved)"
             else:
                 reason_str = "no audio captured" if not chunks_to_save else "save failed"
                 audio_info = f"Audio: not saved ({reason_str})"

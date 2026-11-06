@@ -50,11 +50,15 @@ target_peak_dbfs = -3.0
 max_gain_db = 20.0
 
 [storage]
-# Directory where temporary audio recordings from sessions are saved
-recordings_dir = "./recordings"
+# Where session recordings go, used only when [privacy] keep_recordings = true.
+# Kept outside the project folder so personal audio isn't next to the code.
+recordings_dir = "~/Library/Application Support/VoiceAssistant/recordings"
 
 # Maximum number of recent recording files to keep in recordings_dir before cleaning older files
 max_recordings_kept = 20
+
+# Where note text is backed up if saving to Notes fails (never pruned)
+note_backups_dir = "~/Library/Application Support/VoiceAssistant/note_backups"
 
 [whisper]
 # Whisper model size or variant: "tiny", "base", "small", "medium", "large-v3-turbo", or English-only ".en" variants
@@ -125,4 +129,10 @@ keep_whatsapp_audio = false
 
 # When WhatsApp is frontmost during dictation or notes, whether to keep the audio recording
 keep_audio_when_whatsapp_front = false
+
+# Whether to save session audio as WAV files in recordings_dir.
+# false (default): audio is transcribed from memory and never written to disk.
+# true: keep recent recordings for debugging or for building a benchmark set.
+# The two WhatsApp settings above still delete WhatsApp audio even when this is true.
+keep_recordings = false
 

@@ -15,6 +15,7 @@ from engine.config import (
     HotkeysConfig,
     NormalizationConfig,
     NotesConfig,
+    PrivacyConfig,
     StorageConfig,
     TimeoutsConfig,
     VADConfig,
@@ -66,7 +67,9 @@ class MockVAD:
         return (self.next_prob >= self.threshold, self.next_prob)
 
 
-def create_test_config(temp_dir: Path) -> AppConfig:
+def create_test_config(temp_dir: Path, keep_recordings: bool = True) -> AppConfig:
+    # keep_recordings=True here so the WAV-writing tests below exercise the debug path;
+    # the default (False) is covered by the in-memory tests at the end of this file.
     return AppConfig(
         hotkeys=HotkeysConfig(
             command_mode="<ctrl>+<alt>+m",
@@ -110,6 +113,7 @@ def create_test_config(temp_dir: Path) -> AppConfig:
             reveal_after_save=False,
             ready_sound=False,
         ),
+        privacy=PrivacyConfig(keep_recordings=keep_recordings),
     )
 
 
@@ -352,3 +356,38 @@ def test_session_result_audio_levels():
         assert abs(res.peak_dbfs - (-6.02)) < 0.1
         assert abs(res.rms_dbfs - (-6.02)) < 0.1
         assert res.input_device is not None
+
+
+def test_default_session_writes_no_wav_and_keeps_audio_in_memory():
+    with tempfile.TemporaryDirectory() as td:
+        rec_dir = Path(td) / "recordings"
+        config = create_test_config(rec_dir, keep_recordings=False)
+        mock_audio = MockAudioCapture()
+        manager = SessionManager(config=config, vad=MockVAD(), audio_capture=mock_audio)
+
+        manager.start_session(SessionMode.COMMAND)
+        chunk = np.full(512, 0.25, dtype=np.float32)
+        mock_audio.feed_chunk(chunk)
+        res = manager.stop_session(EndReason.HOTKEY)
+
+        assert res is not None
+        assert res.audio_path is None
+        assert not rec_dir.exists(), "recordings folder must not even be created"
+        assert res.audio is not None
+        assert np.allclose(res.audio[:512], chunk)
+
+
+def test_default_dictation_and_note_sessions_write_no_wav():
+    with tempfile.TemporaryDirectory() as td:
+        rec_dir = Path(td) / "recordings"
+        config = create_test_config(rec_dir, keep_recordings=False)
+        mock_audio = MockAudioCapture()
+        manager = SessionManager(config=config, vad=MockVAD(), audio_capture=mock_audio)
+
+        for mode in (SessionMode.DICTATION, SessionMode.NOTE, SessionMode.COMMAND):
+            manager.start_session(mode)
+            mock_audio.feed_chunk(np.full(512, 0.25, dtype=np.float32))
+            res = manager.stop_session(EndReason.HOTKEY)
+            assert res is not None and res.audio_path is None
+
+        assert not rec_dir.exists()
