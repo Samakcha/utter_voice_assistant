@@ -11,6 +11,12 @@ class HotkeysConfig:
     command_mode: str
     dictation_mode: str
     cancel: str
+    # Hold-to-talk for dictation: tap the dictation hotkey to toggle (as before), or hold it
+    # at least hold_min_sec and dictation stops when you let go. False keeps toggle only.
+    hold_to_talk: bool = False
+    hold_min_sec: float = 0.4
+    # Keep recording this long after the keys are released so the last word isn't clipped
+    hold_release_tail_sec: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -205,6 +211,9 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
             command_mode=data["hotkeys"]["command_mode"],
             dictation_mode=data["hotkeys"]["dictation_mode"],
             cancel=data["hotkeys"]["cancel"],
+            hold_to_talk=bool(data["hotkeys"].get("hold_to_talk", True)),
+            hold_min_sec=float(data["hotkeys"].get("hold_min_sec", 0.4)),
+            hold_release_tail_sec=float(data["hotkeys"].get("hold_release_tail_sec", 0.3)),
         ),
         timeouts=TimeoutsConfig(
             command_silence_sec=float(data["timeouts"]["command_silence_sec"]),

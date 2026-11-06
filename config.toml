@@ -11,6 +11,19 @@ dictation_mode = "<ctrl>+<alt>+d"
 # Global hotkey to cancel the current listening session immediately
 cancel = "<esc>"
 
+# Hold-to-talk for dictation. Tap Control+Option+D to start and tap again to stop (as
+# before), OR hold it while you speak and the text is pasted when you let go.
+# Hotkeys are matched by physical key position (US layout), and the app swallows its own
+# hotkeys so the focused app never sees them. Set to false to go back to the previous
+# press-only hotkey listener (tap to toggle only).
+hold_to_talk = true
+
+# A press held at least this long (seconds) counts as a hold; shorter is a tap (toggle)
+hold_min_sec = 0.4
+
+# Keep recording this long (seconds) after you let go, so the last word isn't cut off
+hold_release_tail_sec = 0.3
+
 [timeouts]
 # Duration of silence (in seconds) required after speech to auto-stop command mode
 command_silence_sec = 1.5
