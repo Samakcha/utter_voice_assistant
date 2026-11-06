@@ -16,6 +16,8 @@ def test_config_loading():
     assert config.timeouts.command_silence_sec == 1.5
     assert config.timeouts.command_no_speech_sec == 5.0
     assert config.timeouts.dictation_silence_sec == 8.0
+    assert config.timeouts.command_early_check_sec == 0.6
+    assert 0.0 < config.timeouts.command_early_check_sec < config.timeouts.command_silence_sec
 
     # Audio
     assert config.audio.sample_rate == 16000

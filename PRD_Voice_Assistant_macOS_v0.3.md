@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Working title:** TBD
-**Status:** v0.3.3 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11).
+**Status:** v0.3.3 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2).
 **Last updated:** 6 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -76,6 +76,9 @@ All hotkeys are handled by **one single keyboard listener** (see section 11 for 
 ### 6.2 Command mode (`Control + Option + M`)
 1. Press the hotkey; the app starts listening.
 2. Silero VAD detects speech. Recording **auto-stops after trailing silence** (default 1.5 s; see tuning note in 12.4). If no speech starts within 5 s, the session cancels quietly.
+   - **Early finish** (`command_early_check_sec = 0.6`): after 0.6 s of silence the speech so far is transcribed in the background. If it is a complete *fixed* command (`open_notes`, `take_note`, `open_whatsapp`) and the user has still not spoken when the result is ready, the session ends and the command runs at once, reusing that transcript (no second transcription). End of speech to action drops from about 1.9 s to about 1.0 s with `large-v3-turbo`.
+   - **Never early:** WhatsApp search (the name may still be continuing, "Rahul" ... "Sharma"), anything unrecognized, and any pause the user speaks after. These wait the full 1.5 s and are transcribed in full, as before.
+   - **Why not just lower the timeout:** the rules deliberately ignore longer phrases that start like a command ("take a note about groceries", "open WhatsApp and search Rahul": 21 such phrases in the evaluation set). A shorter timeout would cut those off for every command; early finish only acts after about 1 s of real silence on a phrase that is already complete.
 3. The audio is transcribed by Whisper on a dedicated worker thread.
 4. The transcript goes through the **rule layer** (whole-utterance grammar). No LLM is used.
 5. A matching command runs immediately (all current commands are low risk). No match means no action, and the overlay says "Nothing recognized".
@@ -192,7 +195,7 @@ Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 500 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 516 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -226,7 +229,7 @@ voice-assistant/
   interface/                   app, hotkeys, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
   scripts/                     benchmark_whisper, eval_rules, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       500 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       516 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
 
 ~/Library/Application Support/VoiceAssistant/
@@ -239,7 +242,7 @@ voice-assistant/
 
 | Section | Key settings (defaults) |
 |---|---|
-| hotkeys / timeouts | command `<ctrl>+<alt>+m`; dictation `<ctrl>+<alt>+d`; cancel `<esc>`; command silence 1.5 s; command no-speech 5.0 s; dictation silence 8.0 s |
+| hotkeys / timeouts | command `<ctrl>+<alt>+m`; dictation `<ctrl>+<alt>+d`; cancel `<esc>`; command silence 1.5 s; command early check 0.6 s (0 turns early finish off); command no-speech 5.0 s; dictation silence 8.0 s |
 | `[vad]` | `speech_threshold = 0.35`, `min_speech_chunks = 2` |
 | `[normalization]` | `enabled = true`, `target_peak_dbfs = -3.0`, `max_gain_db = 20.0` |
 | `[whisper]` | `model_size = "large-v3-turbo"` (falls back to `"small"` if not downloaded), `language = "en"`, `initial_prompt = ""`, `models_dir = "./models"` |
@@ -258,14 +261,14 @@ voice-assistant/
 | Transcription latency, `small` | about 0.13 to 0.24 s for 4 to 6 s of audio (one slower first call of 0.79 s); average 0.28 s over the same 20 recordings |
 | Peak GPU memory | `large-v3-turbo` about 2.2 GB; `small` about 1.2 GB |
 | Launching Notes (`open -a`) | about 0.06 to 0.09 s |
-| Command silence wait | about 1.50 s |
-| **End of speech to Notes launched** | **about 1.8 to 1.9 s** with `small`, dominated by the silence wait. Not yet re-measured live with turbo; expected about 0.25 s longer |
+| Command silence wait | about 1.50 s; about 1.0 s for fixed commands with early finish (0.6 s check plus about 0.4 s transcription, overlapped) |
+| **End of speech to Notes launched** | **about 1.8 to 1.9 s** before early finish (measured with `small`). With early finish and turbo, estimated **about 1.0 s**: turbo takes 0.37 to 0.39 s for "open notes" / "start taking notes" plus 0.6 s of silence (synthesized speech, 6 Nov 2026). Not yet measured live with the user's voice |
 | Model comparison on the same recordings | Turbo fixed mishearings that `small` made: "Open nodes" → "Open notes", "route section" → "About section", "There is a manual to make" → "There is no need to make". No word error rate yet, because the recordings have no reference transcripts |
 | Input levels | peaks about -13 to -26 dBFS; normalization often at the 20 dB cap |
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 500 passing |
+| Automated tests | 516 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -299,7 +302,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 1. **Names:** Whisper mishears some names and unusual phrases (`small` misheard "Rahul"; turbo still turned one phrase into "Professional Hair Short Meal"). The personal word list (6.11) fixes listed names in dictation and notes; it is deliberately not used for commands, so WhatsApp search names are still as heard. The design avoids name matching: the user sees WhatsApp's own search results and can retry.
 2. **WhatsApp row selection:** pressing "the Nth chat" worked once, but row detection was unreliable (the structure found 3 rows with uneven spacing), and keyboard focus after opening a chat is not in the message box. **Not built** (see Parked).
 3. **After opening a chat** the user must click the message box once before dictating.
-4. **Command latency:** the 1.5 s command silence wait is the dominant delay. Lowering `command_silence_sec` to about 1.0 to 1.2 is recommended; test that it does not cut off mid-sentence.
+4. **Command latency:** the 1.5 s command silence wait was the dominant delay. Early finish (6.2) removes most of it for fixed commands. WhatsApp search still waits 1.5 s on purpose; lowering `command_silence_sec` would speed it up but risks cutting off a name, so test any change live.
 5. **WhatsApp accessibility** depends on WhatsApp's internal UI structure and may break after an update.
 6. **Hotkey dependency:** dictation currently toggles (press to start, press to end); hold-to-talk is parked.
 7. **VoiceOver** also uses Control + Option; hotkeys are configurable in `config.toml`.
@@ -311,6 +314,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 | A stray Return sends a WhatsApp message | The module cannot post Return at all; key whitelist enforced by tests; the user presses Enter. |
 | Keys land in the wrong app | Dual frontmost check (`NSWorkspace` and `lsappinfo`) before every action and every key event; refuse if they disagree. |
 | Whisper mishears a command | Whole-utterance rules, known variants accepted, ambiguous speech does nothing. |
+| Early finish acts on half a sentence | Only fixed commands with no name; refused if the user speaks again before the transcript is ready (pause id check under the session lock); WhatsApp search and unrecognized speech always wait the full timeout; `command_early_check_sec = 0` turns it off. |
 | Stop phrase appears in normal speech | End-of-transcript only, fuzzy but strict on short words, distinctive defaults, stripped from output. |
 | Clipboard overwritten | Full snapshot, restore only if unchanged, transient flags. |
 | Dictation lost on a failed note save | Clipboard copy plus a permanent backup `.txt`. |
@@ -331,10 +335,10 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 
 ## 15. Next steps
 
-1. Tune the command silence timeout.
+1. Try early finish live: say "open notes" and "start taking notes" and check the terminal's latency breakdown ("early finish"); check that "take a note about ..." spoken without a long pause still does nothing.
 2. Choose the next feature from section 14.
 3. Run a formal benchmark (the 30 to 50 phrase test set with `scripts/benchmark_whisper.py` and `scripts/eval_rules.py`) if numeric success criteria are wanted. First step: write reference transcripts for 20 to 30 existing recordings so the benchmark can report word error rate. New recordings need `keep_recordings = true` while collecting them.
-4. Re-measure end of speech to action live with `large-v3-turbo`.
+4. Re-measure end of speech to action live with `large-v3-turbo` (fixed commands and WhatsApp search).
 5. Fill the personal word list with real names and terms and test it live; note any word it changed that it should not have.
 6. Decide whether WhatsApp search (command mode) should also use the word list for contact names.
 
@@ -349,6 +353,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 
 - macOS only, local-first, menu bar app; microphone active only while a session runs.
 - Two hotkeys (`Control + Option + M`, `Control + Option + D`); Esc cancels; one keyboard listener handles all three.
+- Fixed commands finish early once recognized during a 0.6 s pause; anything with a name waits the full 1.5 s.
 - Python 3.12; MLX Whisper `large-v3-turbo` with a local `small` fallback, offline at runtime; Silero VAD (threshold 0.35); audio normalization; no LLM.
 - Commands: open Notes, take a note, open WhatsApp, search WhatsApp. Whole-utterance rules; "open a note" deliberately not a command.
 - Dictation: chunked background transcription, one paste at the end, stop phrases at the end of speech only, clipboard save and restore.

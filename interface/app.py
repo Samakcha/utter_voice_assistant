@@ -13,7 +13,7 @@ import rumps
 
 from engine.actions import ActionResult, execute_action_async
 from engine.chunk_joiner import join_transcription_chunks
-from engine.commands import CommandMatch, match_command
+from engine.commands import CommandMatch, allows_early_finish, match_command
 from engine.config import AppConfig
 from engine.insertion import format_dictation_insertion
 from engine.models import DictationChunk, EndReason, SessionMode, SessionResult, TranscriptionResult
@@ -118,6 +118,11 @@ class VoiceAssistantApp(rumps.App):
         self.session_manager.on_session_start = self._on_session_start
         self.session_manager.on_session_end = self._on_session_end
         self.session_manager.on_dictation_chunk = self._on_dictation_chunk
+        self.session_manager.on_command_pause = self._on_command_pause
+
+        # Command early finish: transcript of a recognized pause, keyed by session id
+        self._early_command_lock = threading.Lock()
+        self._early_command: Optional[tuple] = None  # (session_id, TranscriptionResult)
 
         # Initialize hotkey manager
         self.hotkey_manager = HotkeyManager(
@@ -289,6 +294,44 @@ class VoiceAssistantApp(rumps.App):
                 self.status_item.title = "Status: Listening for command..."
 
             run_on_main_thread(_update_command_ui)
+
+    def _on_command_pause(self, session_id: str, pause_id: int, audio) -> None:
+        """Engine reports a pause in command speech: transcribe what was said so far."""
+        if self.transcriber is None:
+            return
+        self.transcriber.transcribe_async(
+            audio=audio,
+            callback=lambda tx_res: self._on_early_command_transcript(session_id, pause_id, tx_res),
+            on_error=lambda err: logger.debug("Early command transcription failed: %s", err),
+        )
+
+    def _on_early_command_transcript(self, session_id: str, pause_id: int, tx_res: TranscriptionResult) -> None:
+        """If the speech so far is a complete fixed command, end the session now."""
+        match = match_command(tx_res.text)
+        if not allows_early_finish(match):
+            return  # not a fixed command (or a WhatsApp search): wait for the full timeout
+
+        with self._early_command_lock:
+            self._early_command = (session_id, tx_res)
+
+        def _finish():
+            result = self.session_manager.finish_command_early(session_id, pause_id)
+            if result is None:
+                # The user spoke again, or the normal timeout already ended the session
+                with self._early_command_lock:
+                    if self._early_command is not None and self._early_command[0] == session_id:
+                        self._early_command = None
+
+        # Own thread: never stop the audio stream from the audio or transcriber thread
+        threading.Thread(target=_finish, name="command-early-finish", daemon=True).start()
+
+    def _take_early_command(self, session_id: str) -> Optional[TranscriptionResult]:
+        with self._early_command_lock:
+            early = self._early_command
+            self._early_command = None
+        if early is not None and early[0] == session_id:
+            return early[1]
+        return None
 
     def _on_dictation_chunk(self, chunk: DictationChunk) -> None:
         """Callback from engine when a dictation or note speech chunk is ready for transcription."""
@@ -604,6 +647,11 @@ class VoiceAssistantApp(rumps.App):
             return
 
         # 4. COMMAND MODE: verify speech was detected and audio is available.
+        # An early finish already has its transcript (taking it also clears any stale one).
+        early_tx = self._take_early_command(result.session_id)
+        if not result.early_finish:
+            early_tx = None
+
         # Audio comes from memory by default; a saved WAV is used only when recordings are kept.
         if result.audio_path is not None and result.audio_path.exists():
             command_audio = result.audio_path
@@ -632,6 +680,11 @@ class VoiceAssistantApp(rumps.App):
             run_on_main_thread(_set_transcribing_ui)
         except Exception as e:
             logger.error("Failed to set transcribing UI: %s", e, exc_info=True)
+
+        if early_tx is not None:
+            # Recognized during the pause: act now, no second transcription
+            self._on_transcription_success(early_tx, result)
+            return
 
         # Asynchronously transcribe on the dedicated background worker thread
         if self.transcriber is not None:
@@ -957,7 +1010,7 @@ class VoiceAssistantApp(rumps.App):
                 f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Not kept (privacy)'}\n"
                 f"├─────────────────────────────────────────────────────────\n"
                 f"│ Latency Breakdown:\n"
-                f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
+                f"│ • Silence Wait:   {silence_wait_sec:.3f} s ({'early finish: transcribed during the pause' if session_result.early_finish else 'VAD trailing silence'})\n"
                 f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s (RTF: {tx_result.real_time_factor:.2f}x)\n"
                 f"│ • Rule Matching:  {rule_match_time_sec:.4f} s\n"
                 f"│ ────────────────────────────────────────────────────────\n"
@@ -1132,7 +1185,7 @@ class VoiceAssistantApp(rumps.App):
             f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Not kept (privacy)'}\n"
             f"├─────────────────────────────────────────────────────────\n"
             f"│ Latency Breakdown:\n"
-            f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
+            f"│ • Silence Wait:   {silence_wait_sec:.3f} s ({'early finish: transcribed during the pause' if session_result.early_finish else 'VAD trailing silence'})\n"
             f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s\n"
             f"│ • Rule Matching:  {rule_match_time_sec:.4f} s\n"
             f"│ • Action Exec:    {act_res.execution_time_sec:.4f} s (Keys posted: {act_res.keys_posted})\n"
@@ -1207,7 +1260,7 @@ class VoiceAssistantApp(rumps.App):
             f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Not kept (privacy)'}\n"
             f"├─────────────────────────────────────────────────────────\n"
             f"│ Latency Breakdown:\n"
-            f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
+            f"│ • Silence Wait:   {silence_wait_sec:.3f} s ({'early finish: transcribed during the pause' if session_result.early_finish else 'VAD trailing silence'})\n"
             f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s (MLX Whisper '{getattr(self.transcriber, 'active_model_size', self.config.whisper.model_size)}')\n"
             f"│ • Rule Matching:  {rule_match_time_sec:.4f} s\n"
             f"│ • Action Exec:    {act_res.execution_time_sec:.4f} s (`open -a Notes`)\n"

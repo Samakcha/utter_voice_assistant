@@ -15,6 +15,14 @@ cancel = "<esc>"
 # Duration of silence (in seconds) required after speech to auto-stop command mode
 command_silence_sec = 1.5
 
+# Early finish for fixed commands ("open notes", "take a note", "open WhatsApp"):
+# after this much silence the speech so far is transcribed in the background, and if it is
+# one of those complete commands and you are still silent when the result is ready
+# (about 1 s after you stop), it runs without waiting the full command_silence_sec.
+# WhatsApp search (which contains a name) and anything unrecognized still wait the full
+# timeout, so a name is never cut off. Set to 0 to turn early finish off.
+command_early_check_sec = 0.6
+
 # Time limit (in seconds) to detect initial speech in command mode before quiet cancellation
 command_no_speech_sec = 5.0
 

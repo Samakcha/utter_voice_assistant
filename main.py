@@ -52,8 +52,9 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
         config.hotkeys.cancel,
     )
     logger.info(
-        "Timeouts: Command Silence=%.1fs, Command No-Speech=%.1fs, Dictation Silence=%.1fs",
+        "Timeouts: Command Silence=%.1fs (early check %.1fs), Command No-Speech=%.1fs, Dictation Silence=%.1fs",
         config.timeouts.command_silence_sec,
+        config.timeouts.command_early_check_sec,
         config.timeouts.command_no_speech_sec,
         config.timeouts.dictation_silence_sec,
     )

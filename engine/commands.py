@@ -159,6 +159,17 @@ def validate_extracted_name(raw_name: str) -> Optional[str]:
     return " ".join(words)
 
 
+# Commands with nothing open-ended in them. Only these may run before the full command
+# silence timeout (early finish), because there is nothing more the user could add.
+# WhatsApp search is excluded: the name could still be continuing ("Rahul" ... "Sharma").
+EARLY_FINISH_ACTIONS = frozenset({"open_notes", "take_note", "open_whatsapp"})
+
+
+def allows_early_finish(match: Optional[CommandMatch]) -> bool:
+    """True if this match is a complete fixed command that may run before the timeout."""
+    return match is not None and match.action_id in EARLY_FINISH_ACTIONS and not match.extracted_name
+
+
 def match_command(text: str) -> Optional[CommandMatch]:
     """
     Match a transcript against the rule layer.
