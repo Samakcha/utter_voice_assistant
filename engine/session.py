@@ -208,15 +208,27 @@ class SessionManager:
         """Cancel the current session immediately."""
         return self.stop_session(reason)
 
-    def stop_session(self, reason: EndReason) -> Optional[SessionResult]:
+    def stop_session(
+        self,
+        reason: EndReason,
+        only_session_id: Optional[str] = None,
+        only_mode: Optional[SessionMode] = None,
+    ) -> Optional[SessionResult]:
         """
         Stop the active session and process the recorded audio.
         Thread-safe: can be called from hotkeys, UI thread, or internal worker.
+
+        only_session_id / only_mode: stop only if the active session is that one (checked
+        under the lock), so a delayed stop can never end a newer session by mistake.
         """
         auto_stop_time = time.monotonic()
         final_dictation_chunk: Optional[DictationChunk] = None
         with self._lock:
             if not self._is_active:
+                return None
+            if only_session_id is not None and self._current_session_id != only_session_id:
+                return None
+            if only_mode is not None and self._current_mode != only_mode:
                 return None
 
             # Mark inactive immediately to stop receiving further chunks

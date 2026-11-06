@@ -46,9 +46,11 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     logger.info("Configuration loaded from config.toml.")
     logger.info("Audio input device: %s", AudioCapture.get_input_device_name())
     logger.info(
-        "Hotkeys: Command='%s', Dictation='%s', Cancel='%s'",
+        "Hotkeys: Command='%s', Dictation='%s' (%s), Cancel='%s'",
         config.hotkeys.command_mode,
         config.hotkeys.dictation_mode,
+        f"tap to toggle, hold {config.hotkeys.hold_min_sec:.1f}s+ to talk"
+        if config.hotkeys.hold_to_talk else "tap to toggle",
         config.hotkeys.cancel,
     )
     logger.info(

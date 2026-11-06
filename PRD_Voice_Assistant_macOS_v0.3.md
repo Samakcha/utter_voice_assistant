@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Working title:** TBD
-**Status:** v0.3.3 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2).
+**Status:** v0.3.5 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4).
 **Last updated:** 6 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -51,7 +51,7 @@ The hotkey tells the app the user's intent, so it never guesses whether speech i
 | Mode | Hotkey | Behavior |
 |---|---|---|
 | Command mode | `Control + Option + M` | Press once, speak a command, it ends on silence. |
-| Dictation mode | `Control + Option + D` | Press once to start, continuous session, text is pasted once at the end. |
+| Dictation mode | `Control + Option + D` | Tap to start and tap again to stop, **or hold while speaking and let go** (hold-to-talk). Text is pasted once at the end. |
 | Cancel | `Esc` | Cancels any active session; nothing is pasted or saved. |
 
 All hotkeys are handled by **one single keyboard listener** (see section 11 for why).
@@ -95,12 +95,18 @@ The whole normalized utterance must match a command's grammar: lowercase, punctu
 - **`whatsapp_search` name slot:** 1 to 4 words; letters in any script (including Devanagari), apostrophes and hyphens; single-letter middle initials allowed; digits and symbols rejected; names beginning with reserved words (the, a, an, my, notes, note, whatsapp, chat, app) rejected.
 
 ### 6.4 Dictation mode (`Control + Option + D`)
-1. Press the hotkey to start a **continuous** session. Press it again to end.
+1. Press the hotkey to start a **continuous** session. Two ways to end it with the key:
+   - **Tap** (shorter than `hold_min_sec`, 0.4 s): dictation keeps going; tap again to end (the original toggle).
+   - **Hold** (0.4 s or longer): dictation ends when you let go, after a 0.3 s tail (`hold_release_tail_sec`) so the last word is not clipped. Letting go of D, Control or Option all count as letting go.
+   - Recording starts on key-down either way, so nothing is lost while the app decides between tap and hold.
+   - **How the keys are read:** one raw keyboard listener (key-down, key-up and modifier changes) matches hotkeys by **physical key code**, because Option changes what "D" types ("∂"). Auto-repeat while held is ignored. The app **swallows its own two hotkeys** (an active event tap), so the focused app never sees them: no beeps, no stray characters, and no Ctrl+D (delete forward) if Option is let go first. Esc is never swallowed.
+   - **Safety:** a watchdog checks the keyboard's physical state every 0.25 s while the key is held and releases if a key-up was missed. A delayed release only stops the session that press started (checked under the session lock). Callbacks run on a separate thread, so the event tap never waits on audio or UI work.
+   - **Fallback:** swallowing keys needs Accessibility permission. Without it, or with `hold_to_talk = false`, the app uses the previous press-only listener (tap to toggle).
 2. **Chunked background transcription:** when the VAD sees a pause of at least `chunk_pause_sec` (0.8 s) after speech, the speech so far is cut (about 300 ms padding each side, silence trimmed, volume normalized) and transcribed in the background while recording continues. Chunks shorter than 250 ms of speech are skipped (they cause Whisper hallucinations).
 3. A **chunk joiner** stitches the pieces (Whisper capitalizes and punctuates each chunk, so mid-sentence pauses are repaired).
 4. Every chunk carries a **session id**; late results from cancelled or finished sessions are ignored.
 5. **Nothing is pasted until the session ends.** Then the final text is pasted once (see 6.6).
-6. The session ends on: a **stop phrase**, the dictation hotkey pressed again, **8 s of silence**, or Esc (cancel, paste nothing).
+6. The session ends on: a **stop phrase**, the dictation hotkey pressed again, letting go after a hold, **8 s of silence**, or Esc (cancel, paste nothing).
 7. The LLM is never involved in dictation.
 8. The **personal word list** (6.11) is hinted to Whisper for every chunk, and close mishearings of listed names are fixed in the final text before pasting.
 
@@ -195,7 +201,7 @@ Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 516 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 549 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -226,10 +232,10 @@ voice-assistant/
   engine/                      audio_capture, vad, session, transcriber, audio_utils, commands,
                                actions, stop_phrases, chunk_joiner, insertion, notes_writer, vocabulary,
                                config, models
-  interface/                   app, hotkeys, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
+  interface/                   app, hotkeys, key_events, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
   scripts/                     benchmark_whisper, eval_rules, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       516 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       549 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
 
 ~/Library/Application Support/VoiceAssistant/
@@ -242,7 +248,7 @@ voice-assistant/
 
 | Section | Key settings (defaults) |
 |---|---|
-| hotkeys / timeouts | command `<ctrl>+<alt>+m`; dictation `<ctrl>+<alt>+d`; cancel `<esc>`; command silence 1.5 s; command early check 0.6 s (0 turns early finish off); command no-speech 5.0 s; dictation silence 8.0 s |
+| hotkeys / timeouts | command `<ctrl>+<alt>+m`; dictation `<ctrl>+<alt>+d`; cancel `<esc>`; `hold_to_talk = true`, `hold_min_sec = 0.4`, `hold_release_tail_sec = 0.3`; command silence 1.5 s; command early check 0.6 s (0 turns early finish off); command no-speech 5.0 s; dictation silence 8.0 s |
 | `[vad]` | `speech_threshold = 0.35`, `min_speech_chunks = 2` |
 | `[normalization]` | `enabled = true`, `target_peak_dbfs = -3.0`, `max_gain_db = 20.0` |
 | `[whisper]` | `model_size = "large-v3-turbo"` (falls back to `"small"` if not downloaded), `language = "en"`, `initial_prompt = ""`, `models_dir = "./models"` |
@@ -268,7 +274,7 @@ voice-assistant/
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 516 passing |
+| Automated tests | 549 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -304,7 +310,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 3. **After opening a chat** the user must click the message box once before dictating.
 4. **Command latency:** the 1.5 s command silence wait was the dominant delay. Early finish (6.2) removes most of it for fixed commands. WhatsApp search still waits 1.5 s on purpose; lowering `command_silence_sec` would speed it up but risks cutting off a name, so test any change live.
 5. **WhatsApp accessibility** depends on WhatsApp's internal UI structure and may break after an update.
-6. **Hotkey dependency:** dictation currently toggles (press to start, press to end); hold-to-talk is parked.
+6. **Hotkeys:** matched by physical key position on a US (QWERTY) layout, so on other layouts the letter may sit elsewhere. A hold shorter than 0.4 s counts as a tap, so a very short held phrase keeps dictating until the next press. Hold-to-talk needs Accessibility permission (otherwise tap-to-toggle only). Not yet tested live with real key presses.
 7. **VoiceOver** also uses Control + Option; hotkeys are configurable in `config.toml`.
 
 ## 13. Risks and mitigations
@@ -315,6 +321,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 | Keys land in the wrong app | Dual frontmost check (`NSWorkspace` and `lsappinfo`) before every action and every key event; refuse if they disagree. |
 | Whisper mishears a command | Whole-utterance rules, known variants accepted, ambiguous speech does nothing. |
 | Early finish acts on half a sentence | Only fixed commands with no name; refused if the user speaks again before the transcript is ready (pause id check under the session lock); WhatsApp search and unrecognized speech always wait the full timeout; `command_early_check_sec = 0` turns it off. |
+| Hold-to-talk sticks or eats keys | Only the app's own two hotkeys are swallowed (exact modifiers), Esc never; the intercept never raises and passes events on any error; a watchdog releases on missed key-ups; releases stop only the session that press started; `hold_to_talk = false` restores the old listener. |
 | Stop phrase appears in normal speech | End-of-transcript only, fuzzy but strict on short words, distinctive defaults, stripped from output. |
 | Clipboard overwritten | Full snapshot, restore only if unchanged, transient flags. |
 | Dictation lost on a failed note save | Clipboard copy plus a permanent backup `.txt`. |
@@ -325,17 +332,16 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 
 ## 14. Parked ideas (designed or discussed, not built)
 
-1. **Hold-to-talk dictation:** hold `Control + Option + D` to record, release to paste. Requires one listener with key-down and key-up tracking, matching by key code (Option changes what "D" types), ignoring auto-repeat, a state machine, release tail, minimum hold time, a watchdog for missed releases, and checking whether the held keys cause beeps. A full prompt exists.
-2. **Open any installed app by voice:** an in-memory app inventory with matching levels (alias, exact, compact form such as "x code" for Xcode, unique partial name, strict fuzzy), refusal on ambiguity or unknown names, launching only from a resolved bundle path with an argument list. Notes and WhatsApp commands keep priority. A full prompt exists.
-3. **"Open the Nth WhatsApp chat":** needs a more reliable row-detection test.
-4. **LLM fallback** for flexible phrasing (original Step 4), benchmarked against the rules, off by default.
-5. **Settings screen, native Swift interface, packaging, code signing, permission onboarding.**
-6. **Read-back of notes, sending a message by voice** (would need a confirmation overlay with Enter/Esc, and is high risk).
-7. **Dictation cleanup** (filler words, punctuation), model options for lower-memory Macs, optional cloud models.
+1. **Open any installed app by voice:** an in-memory app inventory with matching levels (alias, exact, compact form such as "x code" for Xcode, unique partial name, strict fuzzy), refusal on ambiguity or unknown names, launching only from a resolved bundle path with an argument list. Notes and WhatsApp commands keep priority. A full prompt exists.
+2. **"Open the Nth WhatsApp chat":** needs a more reliable row-detection test.
+3. **LLM fallback** for flexible phrasing (original Step 4), benchmarked against the rules, off by default.
+4. **Settings screen, native Swift interface, packaging, code signing, permission onboarding.**
+5. **Read-back of notes, sending a message by voice** (would need a confirmation overlay with Enter/Esc, and is high risk).
+6. **Dictation cleanup** (filler words, punctuation), model options for lower-memory Macs, optional cloud models.
 
 ## 15. Next steps
 
-1. Try early finish live: say "open notes" and "start taking notes" and check the terminal's latency breakdown ("early finish"); check that "take a note about ..." spoken without a long pause still does nothing.
+1. Try hold-to-talk live: hold `Control + Option + D`, speak, let go (text pastes); tap it for toggle as before; check that holding it in a text field makes no beep and types nothing.
 2. Choose the next feature from section 14.
 3. Run a formal benchmark (the 30 to 50 phrase test set with `scripts/benchmark_whisper.py` and `scripts/eval_rules.py`) if numeric success criteria are wanted. First step: write reference transcripts for 20 to 30 existing recordings so the benchmark can report word error rate. New recordings need `keep_recordings = true` while collecting them.
 4. Re-measure end of speech to action live with `large-v3-turbo` (fixed commands and WhatsApp search).
@@ -352,7 +358,8 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 ## 17. Summary of decisions
 
 - macOS only, local-first, menu bar app; microphone active only while a session runs.
-- Two hotkeys (`Control + Option + M`, `Control + Option + D`); Esc cancels; one keyboard listener handles all three.
+- Two hotkeys (`Control + Option + M`, `Control + Option + D`); Esc cancels; one keyboard listener handles all three, matched by key code.
+- Dictation hotkey: tap to toggle or hold to talk (0.4 s threshold, 0.3 s release tail); the app swallows its own hotkeys; falls back to tap-only without Accessibility.
 - Fixed commands finish early once recognized during a 0.6 s pause; anything with a name waits the full 1.5 s.
 - Python 3.12; MLX Whisper `large-v3-turbo` with a local `small` fallback, offline at runtime; Silero VAD (threshold 0.35); audio normalization; no LLM.
 - Commands: open Notes, take a note, open WhatsApp, search WhatsApp. Whole-utterance rules; "open a note" deliberately not a command.
@@ -361,4 +368,4 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 - WhatsApp: no contacts file; dual frontmost guard; only Cmd+F and Cmd+V; the user sends messages manually.
 - Privacy by design: no session audio written to disk by default, personal data in `~/Library/Application Support/VoiceAssistant/`, names redacted at the source, audio deleted early for WhatsApp, fake names in all tests.
 - Personal word list for dictation and notes: hinted to Whisper, strict post-correction, stored with personal data, never used for commands.
-- Hold-to-talk, open-any-app, WhatsApp Nth-chat and the LLM fallback are parked.
+- Open-any-app, WhatsApp Nth-chat and the LLM fallback are parked.

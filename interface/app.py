@@ -30,6 +30,7 @@ from engine.transcriber import BaseTranscriber
 from engine.vocabulary import VocabularyStore, build_whisper_prompt, correct_text, strip_prompt_echo
 from .clipboard import get_general_pasteboard, paste_and_restore
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
+from .key_events import is_hold
 from .overlay import VoiceAssistantOverlay
 from .permissions import format_permissions_report, get_all_permissions, open_settings_pane
 from .whatsapp_control import (
@@ -124,6 +125,11 @@ class VoiceAssistantApp(rumps.App):
         self._early_command_lock = threading.Lock()
         self._early_command: Optional[tuple] = None  # (session_id, TranscriptionResult)
 
+        # Hold-to-talk: the dictation session started by the current key press, if any.
+        # On release it is stopped only if the press was a hold (not a quick tap).
+        self._hold_lock = threading.Lock()
+        self._hold_session_id: Optional[str] = None
+
         # Initialize hotkey manager
         self.hotkey_manager = HotkeyManager(
             command_hotkey_str=config.hotkeys.command_mode,
@@ -133,6 +139,8 @@ class VoiceAssistantApp(rumps.App):
             on_dictation=self._on_dictation_hotkey,
             on_cancel=self._on_cancel_hotkey,
             is_session_active=lambda: self.session_manager.is_listening,
+            hold_to_talk=config.hotkeys.hold_to_talk,
+            on_dictation_release=self._on_dictation_release,
         )
 
         # Build menu items
@@ -206,13 +214,55 @@ class VoiceAssistantApp(rumps.App):
         self.session_manager.start_session(SessionMode.COMMAND)
 
     def _on_dictation_hotkey(self) -> None:
-        """Handle dictation mode hotkey trigger."""
+        """Handle dictation mode hotkey press (start, or stop if already dictating)."""
+        with self._hold_lock:
+            self._hold_session_id = None
         if not self.is_running:
             return
         if self.session_manager.is_listening and self.session_manager.current_mode == SessionMode.NOTE:
             self.session_manager.stop_session(EndReason.HOTKEY)
             return
+        was_listening = self.session_manager.is_listening
         self.session_manager.start_session(SessionMode.DICTATION)
+        if (
+            self.hotkey_manager.hold_to_talk  # False if it fell back to tap-to-toggle
+            and not was_listening
+            and self.session_manager.current_mode == SessionMode.DICTATION
+        ):
+            # This press started dictation; letting go after a hold will end it
+            with self._hold_lock:
+                self._hold_session_id = self.session_manager.current_session_id
+
+    def _on_dictation_release(self, held_sec: float) -> None:
+        """
+        Dictation hotkey released. After a hold (>= hold_min_sec) the dictation this press
+        started ends, after a short tail so the last word isn't clipped. After a quick tap
+        nothing happens: dictation keeps going until the next press, as before.
+        """
+        with self._hold_lock:
+            session_id = self._hold_session_id
+            self._hold_session_id = None
+        if not session_id or not self.is_running:
+            return
+        if not is_hold(held_sec, self.config.hotkeys.hold_min_sec):
+            logger.info("Dictation hotkey tapped (%.2fs): press again to stop.", held_sec)
+            return
+        tail = max(0.0, self.config.hotkeys.hold_release_tail_sec)
+        logger.info("Dictation hotkey released after a %.2fs hold: stopping in %.2fs.", held_sec, tail)
+
+        def _stop():
+            # Only the session this press started, and only if it is still dictating
+            self.session_manager.stop_session(
+                EndReason.HOTKEY, only_session_id=session_id, only_mode=SessionMode.DICTATION
+            )
+
+        if tail <= 0:
+            _stop()
+        else:
+            timer = threading.Timer(tail, _stop)
+            timer.daemon = True
+            timer.name = "hold-release-tail"
+            timer.start()
 
     def _on_cancel_hotkey(self) -> None:
         """Handle Esc cancellation."""
