@@ -39,6 +39,14 @@ def test_config_loading():
         assert project_root not in data_dir.parents, f"{data_dir} is inside the project folder"
         assert "Library/Application Support/VoiceAssistant" in str(data_dir)
 
+    # Personal word list: on by default, stored with the user's other data
+    assert config.vocabulary.file is not None
+    assert config.vocabulary.file.is_absolute()
+    assert project_root not in config.vocabulary.file.parents
+    assert str(config.vocabulary.file).endswith("Library/Application Support/VoiceAssistant/vocabulary.txt")
+    assert config.vocabulary.max_prompt_terms == 50
+    assert config.vocabulary.auto_correct is True
+
     # Whisper
     assert config.whisper.model_size == "large-v3-turbo"
     assert config.whisper.language == "en"
@@ -67,3 +75,16 @@ def test_config_loading():
     assert config.notes.folder == ""
     assert config.notes.reveal_after_save is False
     assert config.notes.ready_sound is True
+
+
+def test_word_list_can_be_turned_off(tmp_path):
+    source = (Path(__file__).resolve().parent.parent / "config.toml").read_text(encoding="utf-8")
+    assert "[vocabulary]\n" in source
+    turned_off = source.replace("[vocabulary]\n", "[vocabulary]\nenabled = false\n", 1)
+    # Drop the original enabled line so the key isn't defined twice
+    turned_off = turned_off.replace("\nenabled = true\nfile =", "\nfile =", 1)
+    path = tmp_path / "config.toml"
+    path.write_text(turned_off, encoding="utf-8")
+
+    config = load_config(path)
+    assert config.vocabulary.file is None

@@ -9,8 +9,11 @@ Ensures that across the ENTIRE test suite:
    so the developer's real clipboard is NEVER read or modified by any test.
 6. No test may write recordings or note backups into the real user data folder
    (~/Library/Application Support/VoiceAssistant).
+7. No test reads the user's real personal word list: any word-list path inside the real
+   data folder is redirected to an empty per-test file location.
 """
 
+from pathlib import Path
 import subprocess
 import pytest
 import AppKit
@@ -96,6 +99,25 @@ def global_safety_net(monkeypatch):
     monkeypatch.setattr("interface.clipboard.get_general_pasteboard", lambda: test_pasteboard)
     monkeypatch.setattr("interface.whatsapp_control.get_general_pasteboard", lambda: test_pasteboard)
     monkeypatch.setattr("interface.app.get_general_pasteboard", lambda: test_pasteboard)
+
+
+# 7. Real personal word list: tests must not depend on (or see) the user's own names.
+@pytest.fixture(autouse=True)
+def isolate_real_word_list(monkeypatch, tmp_path):
+    from engine.config import DEFAULT_DATA_DIR
+    import engine.vocabulary as vocabulary
+
+    real_root = DEFAULT_DATA_DIR.expanduser().resolve()
+    original_init = vocabulary.VocabularyStore.__init__
+
+    def _isolated_init(self, path):
+        if path is not None:
+            resolved = Path(path).expanduser().resolve()
+            if resolved == real_root or real_root in resolved.parents:
+                path = tmp_path / "isolated_word_list" / "vocabulary.txt"
+        original_init(self, path)
+
+    monkeypatch.setattr(vocabulary.VocabularyStore, "__init__", _isolated_init)
 
 
 # 6. Real user data folder: no test may write recordings or note backups into it.

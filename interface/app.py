@@ -27,6 +27,7 @@ from engine.notes_writer import (
 from engine.session import SessionManager
 from engine.stop_phrases import detect_stop_phrase, validate_stop_phrases
 from engine.transcriber import BaseTranscriber
+from engine.vocabulary import VocabularyStore, build_whisper_prompt, correct_text, strip_prompt_echo
 from .clipboard import get_general_pasteboard, paste_and_restore
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
 from .overlay import VoiceAssistantOverlay
@@ -90,6 +91,9 @@ class VoiceAssistantApp(rumps.App):
         validate_stop_phrases(config.dictation.stop_phrases)
         validate_stop_phrases(config.notes.stop_phrases)
 
+        # Personal word list (dictation and notes only); re-read automatically when edited
+        self.vocabulary = VocabularyStore(config.vocabulary.file)
+
         # Dictation session state tracking
         self._dictation_session_id: Optional[str] = None
         self._dictation_chunks: Dict[int, str] = {}
@@ -132,6 +136,7 @@ class VoiceAssistantApp(rumps.App):
         self.toggle_item = rumps.MenuItem("Stop Assistant", callback=self.toggle_service)
         self.permissions_item = rumps.MenuItem("Check Permissions", callback=self.show_permissions_dialog)
         self.recordings_item = rumps.MenuItem("Open Recordings Folder", callback=self.open_recordings_folder)
+        self.word_list_item = rumps.MenuItem("Edit Word List…", callback=self.open_word_list)
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.menu = [
@@ -139,6 +144,7 @@ class VoiceAssistantApp(rumps.App):
             None,  # Separator
             self.toggle_item,
             self.permissions_item,
+            self.word_list_item,
             self.recordings_item,
             None,  # Separator
             self.quit_item,
@@ -316,11 +322,12 @@ class VoiceAssistantApp(rumps.App):
             is_final = chunk.is_final
 
             # Context prompt from previous chunk
-            prompt = None
+            context = None
             if self.config.dictation.context_prompt and chunk_idx > 0:
                 completed = [self._dictation_chunks[i] for i in sorted(self._dictation_chunks.keys()) if i < chunk_idx]
                 if completed:
-                    prompt = completed[-1]
+                    context = completed[-1]
+        prompt = self._build_chunk_prompt(context)
 
         if self.transcriber is None:
             logger.warning("No transcriber available for dictation chunk %d", chunk_idx)
@@ -364,11 +371,12 @@ class VoiceAssistantApp(rumps.App):
             is_final = chunk.is_final
 
             # Context prompt from previous chunk
-            prompt = None
+            context = None
             if self.config.dictation.context_prompt and chunk_idx > 0:
                 completed = [self._note_chunks[i] for i in sorted(self._note_chunks.keys()) if i < chunk_idx]
                 if completed:
-                    prompt = completed[-1]
+                    context = completed[-1]
+        prompt = self._build_chunk_prompt(context)
 
         if self.transcriber is None:
             logger.warning("No transcriber available for note chunk %d", chunk_idx)
@@ -400,6 +408,40 @@ class VoiceAssistantApp(rumps.App):
             normalize=self.config.normalization.enabled,
         )
 
+    def _build_chunk_prompt(self, context: Optional[str]) -> Optional[str]:
+        """Whisper prompt for a dictation/note chunk: config prompt + word list + previous chunk."""
+        return build_whisper_prompt(
+            self.vocabulary.terms(),
+            context=context,
+            base_prompt=self.config.whisper.initial_prompt,
+            max_terms=self.config.vocabulary.max_prompt_terms,
+        )
+
+    def _strip_hint_echo(self, text: str) -> str:
+        """Whisper can repeat the word-list hint on near-silent chunks; drop it per chunk,
+        before stop-phrase detection, so an echo can't hide a trailing stop phrase."""
+        terms = self.vocabulary.terms()
+        return strip_prompt_echo(text, terms) if terms else text
+
+    def _apply_word_list(self, text: str, label: str) -> str:
+        """Fix close mishearings of listed terms in the final dictation or note text."""
+        if not self.config.vocabulary.auto_correct or not text:
+            return text
+        terms = self.vocabulary.terms()
+        if not terms:
+            return text
+        result = correct_text(text, terms)
+        if result.corrections:
+            if self.config.privacy.redact_names_in_logs:
+                logger.info("[%s] Word list fixed %d word(s).", label, len(result.corrections))
+            else:
+                logger.info(
+                    "[%s] Word list fixed: %s",
+                    label,
+                    ", ".join(f"'{c.original}' -> '{c.replacement}'" for c in result.corrections),
+                )
+        return result.text
+
     def _handle_dictation_chunk_result(
         self,
         session_id: str,
@@ -410,13 +452,14 @@ class VoiceAssistantApp(rumps.App):
         """Process completed transcription of a dictation chunk."""
         should_finalize = False
         stop_phrase_detected = False
+        chunk_text = self._strip_hint_echo(tx_result.text)
         with self._dictation_lock:
             if session_id != self._dictation_session_id or self._dictation_session_id is None:
                 logger.debug("Dropping chunk result for stale session %s", session_id)
                 return
 
             self._dictation_pending_chunks = max(0, self._dictation_pending_chunks - 1)
-            self._dictation_chunks[chunk_index] = tx_result.text
+            self._dictation_chunks[chunk_index] = chunk_text
             self._dictation_latencies[chunk_index] = tx_result.processing_time_sec
 
             # Check if accumulated text ends with a stop phrase
@@ -450,13 +493,14 @@ class VoiceAssistantApp(rumps.App):
         """Process completed transcription of a note chunk."""
         should_finalize = False
         stop_phrase_detected = False
+        chunk_text = self._strip_hint_echo(tx_result.text)
         with self._note_lock:
             if session_id != self._note_session_id or self._note_session_id is None:
                 logger.debug("Dropping chunk result for stale note session %s", session_id)
                 return
 
             self._note_pending_chunks = max(0, self._note_pending_chunks - 1)
-            self._note_chunks[chunk_index] = tx_result.text
+            self._note_chunks[chunk_index] = chunk_text
             self._note_latencies[chunk_index] = tx_result.processing_time_sec
 
             # Check if accumulated text ends with a configured note stop phrase
@@ -630,6 +674,8 @@ class VoiceAssistantApp(rumps.App):
             matched_phrase_str = "None"
             end_reason_str = session_result.end_reason.value if session_result else "unknown"
 
+        final_text = self._apply_word_list(final_text, "Dictation")
+
         formatted = format_dictation_insertion(
             final_text,
             trailing_space=self.config.dictation.trailing_space,
@@ -729,6 +775,8 @@ class VoiceAssistantApp(rumps.App):
             final_text = raw_joined
             matched_phrase_str = "None"
             end_reason_str = session_result.end_reason.value if session_result else "unknown"
+
+        final_text = self._apply_word_list(final_text, "Note")
 
         if not final_text.strip():
             self._restore_idle_ui()
@@ -1252,6 +1300,19 @@ class VoiceAssistantApp(rumps.App):
             subprocess.run(["open", str(rec_dir)], check=False)
         except Exception as e:
             logger.error("Could not open recordings directory: %s", e)
+
+    def open_word_list(self, _sender=None) -> None:
+        """Create the personal word list if needed and open it in the default text editor."""
+        try:
+            path = self.vocabulary.ensure_file()
+        except Exception as e:
+            logger.error("Could not create the word list: %s", e)
+            rumps.alert("Word List Unavailable", str(e))
+            return
+        try:
+            subprocess.run(["open", "-t", str(path)], check=False)
+        except Exception as e:
+            logger.error("Could not open the word list: %s", e)
 
     def quit_app(self, _sender=None) -> None:
         """Clean shutdown of engine and interface."""

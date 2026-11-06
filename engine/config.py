@@ -101,6 +101,14 @@ class PrivacyConfig:
 
 
 @dataclass(frozen=True)
+class VocabularyConfig:
+    """Personal word list (dictation and notes only). file=None turns it off."""
+    file: Optional[Path] = None
+    max_prompt_terms: int = 50
+    auto_correct: bool = True
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
     timeouts: TimeoutsConfig
@@ -112,6 +120,7 @@ class AppConfig:
     dictation: DictationConfig
     notes: NotesConfig
     privacy: PrivacyConfig = PrivacyConfig()
+    vocabulary: VocabularyConfig = VocabularyConfig()
 
 
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
@@ -178,6 +187,16 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         keep_recordings=bool(privacy_data.get("keep_recordings", False)),
     )
 
+    vocab_data = data.get("vocabulary", {})
+    vocab_enabled = bool(vocab_data.get("enabled", True))
+    vocabulary = VocabularyConfig(
+        file=_resolve_dir(
+            str(vocab_data.get("file", DEFAULT_DATA_DIR / "vocabulary.txt")), project_root
+        ) if vocab_enabled else None,
+        max_prompt_terms=int(vocab_data.get("max_prompt_terms", 50)),
+        auto_correct=bool(vocab_data.get("auto_correct", True)),
+    )
+
     return AppConfig(
         hotkeys=HotkeysConfig(
             command_mode=data["hotkeys"]["command_mode"],
@@ -213,4 +232,5 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         dictation=dictation,
         notes=notes,
         privacy=privacy,
+        vocabulary=vocabulary,
     )

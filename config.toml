@@ -136,3 +136,19 @@ keep_audio_when_whatsapp_front = false
 # The two WhatsApp settings above still delete WhatsApp audio even when this is true.
 keep_recordings = false
 
+
+[vocabulary]
+# Personal word list: names and terms you want spelled right, one per line.
+# Used in dictation and notes only (never commands): hinted to Whisper, and close
+# mishearings are fixed afterwards ("Rahool" -> "Rahul"). Edit it from the menu bar:
+# "Edit Word List...". Kept outside the project folder because names are personal data.
+enabled = true
+file = "~/Library/Application Support/VoiceAssistant/vocabulary.txt"
+
+# Most terms hinted to Whisper per chunk. The hint is also capped at ~400 characters,
+# because long hints can make Whisper invent words.
+max_prompt_terms = 50
+
+# Fix close mishearings of listed words after transcription. Strict: ordinary English
+# words are never changed, only near-misses of your listed names and terms.
+auto_correct = true
