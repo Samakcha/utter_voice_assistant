@@ -104,6 +104,8 @@ def create_app_fixture(notes_writer: Optional[BaseNotesWriter] = None, transcrib
         storage=StorageConfig(
             recordings_dir=Path("/tmp/voice_test"),
             max_recordings_kept=5,
+            # Relative on purpose: tests chdir into tmp_path, so nothing reaches the real data folder
+            note_backups_dir=Path("note_backups"),
         ),
         whisper=WhisperConfig(
             model_size="tiny",
@@ -385,3 +387,74 @@ def test_hotkey_during_note_mode_stops_session():
     # Press command hotkey
     app._on_command_hotkey()
     assert EndReason.HOTKEY in stopped_reasons
+
+
+class CapturingTranscriber:
+    """Records what audio the app hands to the transcriber."""
+
+    def __init__(self, text: str = "hello there"):
+        self.text = text
+        self.audio_seen = []
+
+    def transcribe_async(self, audio, callback, on_error=None, prompt=None, normalize=True):
+        self.audio_seen.append(audio)
+        callback(TranscriptionResult(text=self.text, language="en", audio_duration_sec=1.0, processing_time_sec=0.01))
+
+
+def test_command_mode_transcribes_from_memory_when_no_wav_is_kept():
+    import numpy as np
+    tx = CapturingTranscriber()
+    app, _, _, _ = create_app_fixture(transcriber=tx)
+    audio = np.full(16000, 0.2, dtype=np.float32)
+    res = SessionResult(
+        session_id="cmd-mem",
+        mode=SessionMode.COMMAND,
+        audio_path=None,
+        duration_sec=1.0,
+        end_reason=EndReason.SILENCE,
+        speech_detected=True,
+        sample_rate=16000,
+        total_samples=16000,
+        audio=audio,
+    )
+    app._on_session_end(res)
+    assert len(tx.audio_seen) == 1
+    assert tx.audio_seen[0] is audio
+
+
+def test_command_mode_prefers_kept_wav_file(tmp_path: Path):
+    import numpy as np
+    wav = tmp_path / "cmd.wav"
+    wav.write_bytes(b"RIFF")
+    tx = CapturingTranscriber()
+    app, _, _, _ = create_app_fixture(transcriber=tx)
+    res = SessionResult(
+        session_id="cmd-wav",
+        mode=SessionMode.COMMAND,
+        audio_path=wav,
+        duration_sec=1.0,
+        end_reason=EndReason.SILENCE,
+        speech_detected=True,
+        sample_rate=16000,
+        total_samples=16000,
+        audio=np.zeros(16000, dtype=np.float32),
+    )
+    app._on_session_end(res)
+    assert tx.audio_seen == [wav]
+
+
+def test_command_mode_without_any_audio_skips_transcription():
+    tx = CapturingTranscriber()
+    app, _, _, _ = create_app_fixture(transcriber=tx)
+    res = SessionResult(
+        session_id="cmd-none",
+        mode=SessionMode.COMMAND,
+        audio_path=None,
+        duration_sec=1.0,
+        end_reason=EndReason.SILENCE,
+        speech_detected=True,
+        sample_rate=16000,
+        total_samples=0,
+    )
+    app._on_session_end(res)
+    assert tx.audio_seen == []

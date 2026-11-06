@@ -1,6 +1,6 @@
 """Domain models and data structures for the voice assistant engine."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -50,6 +50,9 @@ class SessionResult:
     input_device: str = "Unknown"
     trailing_silence_sec: float = 0.0
     auto_stop_time: float = 0.0
+    # Captured audio held in memory (float32, mono). Lets command mode transcribe
+    # without ever writing a WAV file when recordings aren't kept.
+    audio: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
 
     @property
     def was_quiet_cancel(self) -> bool:

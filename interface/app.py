@@ -559,8 +559,13 @@ class VoiceAssistantApp(rumps.App):
                 self._finalize_note_save(result.session_id)
             return
 
-        # 4. COMMAND MODE: verify speech was detected and WAV exists
-        if not result.speech_detected or not result.audio_path or not result.audio_path.exists():
+        # 4. COMMAND MODE: verify speech was detected and audio is available.
+        # Audio comes from memory by default; a saved WAV is used only when recordings are kept.
+        if result.audio_path is not None and result.audio_path.exists():
+            command_audio = result.audio_path
+        else:
+            command_audio = result.audio
+        if not result.speech_detected or command_audio is None:
             if self.overlay is not None:
                 self.overlay.hide()
             self._restore_idle_ui()
@@ -587,7 +592,7 @@ class VoiceAssistantApp(rumps.App):
         # Asynchronously transcribe on the dedicated background worker thread
         if self.transcriber is not None:
             self.transcriber.transcribe_async(
-                audio=result.audio_path,
+                audio=command_audio,
                 callback=lambda tx_res: self._on_transcription_success(tx_res, result),
                 on_error=lambda err: self._on_transcription_error(err, result),
             )
@@ -686,7 +691,7 @@ class VoiceAssistantApp(rumps.App):
                 f"│ Chunks:           {len(chunks_list)} (Transcribe times: [{lat_str}])\n"
                 f"│ End Reason:       {end_reason_str} ({matched_phrase_str})\n"
                 f"│ Paste Duration:   {paste_duration_ms:.1f} ms\n"
-                f"│ Audio File:       {session_result.audio_path.name if session_result and session_result.audio_path and session_result.audio_path.exists() else 'Deleted (Privacy)'}\n"
+                f"│ Audio File:       {session_result.audio_path.name if session_result and session_result.audio_path and session_result.audio_path.exists() else 'Not kept (privacy)'}\n"
                 f"└─────────────────────────────────────────────────────────\n",
                 flush=True,
             )
@@ -791,12 +796,12 @@ class VoiceAssistantApp(rumps.App):
                     flush=True,
                 )
             else:
-                # Save failure backup to note_backups/
+                # Save failure backup to the configured note backups folder
                 backup_path = save_note_failure_backup(
                     text=final_text,
                     title=title,
                     error_msg=result.error or result.message,
-                    backup_dir=Path("note_backups"),
+                    backup_dir=self.config.storage.note_backups_dir,
                 )
 
                 # Copy text to clipboard as normal text (no transient flag)
@@ -901,7 +906,7 @@ class VoiceAssistantApp(rumps.App):
                 f"┌─────────────────────────────────────────────────────────\n"
                 f"│ [Command Unrecognized] No rule matched\n"
                 f"│ Utterance:        \"{log_text}\"\n"
-                f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Deleted (Privacy)'}\n"
+                f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Not kept (privacy)'}\n"
                 f"├─────────────────────────────────────────────────────────\n"
                 f"│ Latency Breakdown:\n"
                 f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
@@ -1076,7 +1081,7 @@ class VoiceAssistantApp(rumps.App):
             f"│ [Command Executed] \"{match.action_id}\" -> {status_str}\n"
             f"│ Utterance:        \"{log_text}\"\n"
             f"│ Action Message:   {act_res.message}\n"
-            f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Deleted (Privacy)'}\n"
+            f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Not kept (privacy)'}\n"
             f"├─────────────────────────────────────────────────────────\n"
             f"│ Latency Breakdown:\n"
             f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
@@ -1151,7 +1156,7 @@ class VoiceAssistantApp(rumps.App):
             f"│ [Command Executed] \"{match.action_id}\" -> {status_str}\n"
             f"│ Utterance:        \"{display_text}\"\n"
             f"│ Action Message:   {act_res.message}\n"
-            f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'None'}\n"
+            f"│ Audio File:       {session_result.audio_path.name if session_result.audio_path and session_result.audio_path.exists() else 'Not kept (privacy)'}\n"
             f"├─────────────────────────────────────────────────────────\n"
             f"│ Latency Breakdown:\n"
             f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"

@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Working title:** TBD
-**Status:** v0.3.1 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switches speech-to-text to Whisper `large-v3-turbo` with a local-only fallback.
+**Status:** v0.3.2 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder.
 **Last updated:** 6 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -68,7 +68,7 @@ All hotkeys are handled by **one single keyboard listener** (see section 11 for 
 ## 6. Functional Requirements
 
 ### 6.1 App shell
-- Menu bar app with Start / Stop / Quit, a "Check Permissions" item, and "Open Recordings Folder".
+- Menu bar app with Start / Stop / Quit, a "Check Permissions" item, and "Open Recordings Folder" (the folder only fills when `keep_recordings = true`).
 - The microphone is open only during an active session; the menu bar title shows the state (idle, listening, transcribing, loading model).
 - A floating **overlay** shows the state and the result of every command (see 6.7).
 - Sessions are finalized on a worker thread (never on the audio callback thread; see lessons learned).
@@ -125,7 +125,7 @@ The whole normalized utterance must match a command's grammar: lowercase, punctu
 3. It ends on a stop phrase ("stop note"), either hotkey, the **10 s** silence timeout, or Esc (creates nothing).
 4. At the end, **one new note** is created in Apple Notes with a title line (default `Voice note {date} {time}`) and the full text.
 5. **Saving:** `osascript` (AppleScript) with the text passed as **arguments** (never spliced into script source, so quotes, backslashes and injection attempts are inert). The body is HTML-escaped (`&`, `<`, `>`), newlines become `<br>`, and Hindi/emoji text is preserved. Runs on a worker thread with a 15 s timeout. Notes is not brought to the front unless `reveal_after_save = true`.
-6. **Never lose dictation:** if saving fails for any reason (including Automation permission denied, error -1743), the text is copied to the clipboard as normal text and written to a backup `.txt` in `note_backups/` (not pruned), and the overlay explains why.
+6. **Never lose dictation:** if saving fails for any reason (including Automation permission denied, error -1743), the text is copied to the clipboard as normal text and written to a backup `.txt` in `~/Library/Application Support/VoiceAssistant/note_backups/` (not pruned), and the overlay explains why.
 7. Empty text creates nothing ("Nothing to save").
 
 ### 6.9 WhatsApp navigation
@@ -148,10 +148,13 @@ Targets the **native WhatsApp desktop app** (Mac Catalyst; bundle id `net.whatsa
 
 ### 6.10 Privacy requirements
 - **Names spoken in WhatsApp searches are redacted at the source** (`<name: N chars>`) in every output: terminal blocks, log lines and macOS notifications (which persist in Notification Center). The on-screen overlay may show the name.
-- `keep_whatsapp_audio = false`: the WAV of a WhatsApp command is deleted right after transcription.
-- `keep_audio_when_whatsapp_front = false`: when WhatsApp is in front, dictation and note audio are not kept and the dictated text is not logged (word count only).
+- **No audio on disk by default** (`keep_recordings = false`): command, dictation and note audio is transcribed from memory and never written as a WAV file. Command mode passes the captured audio to Whisper as an in-memory array; dictation and notes already transcribe in-memory chunks. Setting `keep_recordings = true` saves recent recordings for debugging or for building a benchmark set (at most `max_recordings_kept`, oldest pruned first).
+- **Personal data lives outside the project folder:** recordings (when kept) and failed-note backups go to `~/Library/Application Support/VoiceAssistant/`, not next to the code, where a coding agent could read them.
+- `keep_whatsapp_audio = false`: when recordings are kept, the WAV of a WhatsApp command is still deleted right after transcription.
+- `keep_audio_when_whatsapp_front = false`: when WhatsApp is in front, dictation and note audio are not kept even if `keep_recordings = true`, and the dictated text is not logged (word count only).
 - No contacts file and no WhatsApp data folders are read. All tests use obviously fake names ("Alex Test", "Sam Example").
-- **Pending cleanup:** `recordings/` still stores a WAV of every ordinary command and dictation, and `note_backups/` stores failed-save text, both inside the project folder (readable by the coding agent). See section 15.
+- **Older data left in place:** `recordings/` and `note_backups/` in the project folder, written by builds before v0.3.2, were not moved or deleted. The user decides what to keep (the recordings are useful for the benchmark in section 15).
+- **Test safety net:** `conftest.py` fails any test that writes into `~/Library/Application Support/VoiceAssistant/`.
 
 ## 7. Technical Approach
 
@@ -173,7 +176,7 @@ Targets the **native WhatsApp desktop app** (Mac Catalyst; bundle id `net.whatsa
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 438 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard. |
+| Tests | `pytest`, 443 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, and fails any test that writes into the real user data folder. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -206,8 +209,12 @@ voice-assistant/
   interface/                   app, hotkeys, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
   scripts/                     benchmark_whisper, eval_rules, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       438 tests; tests/data/eval_rules.csv (rule evaluation set)
-  recordings/  note_backups/   runtime output (gitignored)
+  tests/                       443 tests; tests/data/eval_rules.csv (rule evaluation set)
+  recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
+
+~/Library/Application Support/VoiceAssistant/
+  recordings/                  only when keep_recordings = true
+  note_backups/                failed-note text backups (never pruned)
 ```
 
 ## 8. Configuration reference (`config.toml`)
@@ -220,7 +227,8 @@ voice-assistant/
 | `[whisper]` | `model_size = "large-v3-turbo"` (falls back to `"small"` if not downloaded), `language = "en"`, `initial_prompt = ""`, `models_dir = "./models"` |
 | `[dictation]` | `chunk_pause_sec = 0.8`, `min_speech_ms = 250`, `stop_phrases = ["stop dictation", "end dictation"]`, `fuzzy_tolerance = 0.2`, `context_prompt = true`, `clipboard_restore_delay_ms = 400`, `modifier_release_timeout_ms = 500`, `trailing_space = false` |
 | `[notes]` | `stop_phrases = ["stop note", "stop dictation", "end dictation"]`, `silence_sec = 10.0`, `title_template = "Voice note {date} {time}"`, `folder = ""`, `reveal_after_save = false`, optional ready sound |
-| `[privacy]` | `redact_names_in_logs = true`, `keep_whatsapp_audio = false`, `keep_audio_when_whatsapp_front = false` |
+| `[storage]` | `recordings_dir = "~/Library/Application Support/VoiceAssistant/recordings"`, `max_recordings_kept = 20`, `note_backups_dir = "~/Library/Application Support/VoiceAssistant/note_backups"` |
+| `[privacy]` | `redact_names_in_logs = true`, `keep_whatsapp_audio = false`, `keep_audio_when_whatsapp_front = false`, `keep_recordings = false` |
 
 ## 9. Measured behavior (from manual testing)
 
@@ -236,7 +244,7 @@ voice-assistant/
 | Model comparison on the same recordings | Turbo fixed mishearings that `small` made: "Open nodes" → "Open notes", "route section" → "About section", "There is a manual to make" → "There is no need to make". No word error rate yet, because the recordings have no reference transcripts |
 | Input levels | peaks about -13 to -26 dBFS; normalization often at the 20 dB cap |
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
-| Automated tests | 438 passing |
+| Automated tests | 443 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -262,6 +270,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 | Experiment scripts could not bring WhatsApp forward | `NSWorkspace` reads stale in a script without a run loop | Use `open -b` plus an independent `lsappinfo` check; require both to agree before any key press. |
 | Risk of a silent model download at runtime | If the configured model was not in `models/`, the transcriber passed a Hugging Face repo ID to mlx-whisper, which would fetch weights from the network | Resolve local weights only; fall back to `small`; `HF_HUB_OFFLINE=1` in `main.py`; tests prove a repo ID is never returned. |
 | Turbo wrote "Thank you." for a silent clip | `large-v3-turbo` hallucinates on digital silence, and its `no_speech_prob` is always 0, so Whisper's own check cannot catch it | Audio peaking below −60 dBFS is skipped before Whisper (real speech here peaks at −13 to −26 dBFS). |
+| A test wrote a fake note backup into the real `~/Library/Application Support/` folder | A test fixture relied on the new default backup location | Fixture points at a temporary folder; `conftest.py` now fails any test that writes into the real data folder. |
 
 ## 12. Known limitations and tuning notes
 
@@ -283,7 +292,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 | Stop phrase appears in normal speech | End-of-transcript only, fuzzy but strict on short words, distinctive defaults, stripped from output. |
 | Clipboard overwritten | Full snapshot, restore only if unchanged, transient flags. |
 | Dictation lost on a failed note save | Clipboard copy plus a permanent backup `.txt`. |
-| Personal data in the project folder | Redaction, early audio deletion, no contact files; cleanup of `recordings/` and `note_backups/` pending. |
+| Personal data in the project folder | No audio written by default; data folders moved to `~/Library/Application Support/VoiceAssistant/`; redaction; no contact files. Older files in the project folder are left for the user to delete. |
 | WhatsApp UI changes | Structure-only reads, clear failure messages, parked row selection. |
 | Python limits native polish and distribution | Strict engine/interface separation allows a Swift shell later. |
 
@@ -299,12 +308,11 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 
 ## 15. Next steps
 
-1. **Privacy cleanup:** a config switch so audio is not saved by default (kept only for debugging); move `recordings/` and `note_backups/` outside the project folder.
-2. Tune the command silence timeout.
-3. Choose the next feature from section 14.
-4. Run a formal benchmark (the 30 to 50 phrase test set with `scripts/benchmark_whisper.py` and `scripts/eval_rules.py`) if numeric success criteria are wanted. First step: write reference transcripts for 20 to 30 existing recordings so the benchmark can report word error rate.
-5. Re-measure end of speech to action live with `large-v3-turbo`.
-6. **Personal word list:** user names and terms fed to Whisper as a prompt, plus a post-correction pass, to fix misheard names.
+1. Tune the command silence timeout.
+2. Choose the next feature from section 14.
+3. Run a formal benchmark (the 30 to 50 phrase test set with `scripts/benchmark_whisper.py` and `scripts/eval_rules.py`) if numeric success criteria are wanted. First step: write reference transcripts for 20 to 30 existing recordings so the benchmark can report word error rate. New recordings need `keep_recordings = true` while collecting them.
+4. Re-measure end of speech to action live with `large-v3-turbo`.
+5. **Personal word list:** user names and terms fed to Whisper as a prompt, plus a post-correction pass, to fix misheard names.
 
 ## 16. Open questions
 
@@ -322,5 +330,5 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 - Dictation: chunked background transcription, one paste at the end, stop phrases at the end of speech only, clipboard save and restore.
 - Notes saved through AppleScript with arguments; failures never lose text.
 - WhatsApp: no contacts file; dual frontmost guard; only Cmd+F and Cmd+V; the user sends messages manually.
-- Privacy by design: names redacted at the source, audio deleted early for WhatsApp, fake names in all tests.
+- Privacy by design: no session audio written to disk by default, personal data in `~/Library/Application Support/VoiceAssistant/`, names redacted at the source, audio deleted early for WhatsApp, fake names in all tests.
 - Hold-to-talk, open-any-app, WhatsApp Nth-chat and the LLM fallback are parked.
