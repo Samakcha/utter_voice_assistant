@@ -4,8 +4,14 @@ Runs local menu bar app with global hotkeys, Silero VAD, and MLX Whisper transcr
 """
 
 import logging
+import os
 import platform
 import sys
+
+# The app runs fully offline: never let Hugging Face fetch model weights at runtime.
+# Models are downloaded deliberately with scripts/benchmark_whisper.py, which runs separately.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
 from engine import AudioCapture, MLXWhisperTranscriber, SessionManager, load_config
 from interface import VoiceAssistantApp, format_permissions_report, get_all_permissions
 
@@ -50,6 +56,11 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
         config.timeouts.command_silence_sec,
         config.timeouts.command_no_speech_sec,
         config.timeouts.dictation_silence_sec,
+    )
+    logger.info(
+        "Whisper: configured model='%s', language='%s'",
+        config.whisper.model_size,
+        config.whisper.language,
     )
     logger.info(
         "Normalization: Enabled=%s, Target=%.1fdBFS, Max Gain=%.1fdB",
