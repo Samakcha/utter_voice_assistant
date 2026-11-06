@@ -58,7 +58,10 @@ max_recordings_kept = 20
 
 [whisper]
 # Whisper model size or variant: "tiny", "base", "small", "medium", "large-v3-turbo", or English-only ".en" variants
-model_size = "small"
+# large-v3-turbo (1.5 GB on disk, ~2.2 GB GPU memory peak, ~0.55 s per utterance on M5) fixed real
+# mishearings that small made ("open nodes" -> "open notes"). If its weights are missing from
+# models_dir, the app falls back to "small" automatically and never downloads at runtime.
+model_size = "large-v3-turbo"
 
 # Language code (ISO 639-1) for transcription ("en" for English)
 language = "en"

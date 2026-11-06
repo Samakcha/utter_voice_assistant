@@ -31,7 +31,7 @@ def test_config_loading():
     assert config.storage.max_recordings_kept == 20
 
     # Whisper
-    assert config.whisper.model_size == "small"
+    assert config.whisper.model_size == "large-v3-turbo"
     assert config.whisper.language == "en"
     assert config.whisper.initial_prompt == ""
     assert isinstance(config.whisper.models_dir, Path)

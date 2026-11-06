@@ -16,6 +16,9 @@ from .models import TranscriptionResult
 
 logger = logging.getLogger(__name__)
 
+# Audio whose peak is below -60 dBFS is treated as silence and never sent to Whisper.
+SILENCE_PEAK_THRESHOLD = 10 ** (-60.0 / 20.0)
+
 # Known MLX community model repository mapping
 MLX_MODEL_REPO_MAP = {
     "tiny": "mlx-community/whisper-tiny-mlx",
@@ -56,6 +59,45 @@ def resolve_model_path(model_size: str, models_dir: Path) -> str:
 
     # Fall back to repo ID
     return repo_id
+
+
+def _is_local_dir(path: str) -> bool:
+    return Path(path).is_dir()
+
+
+def resolve_local_model(
+    model_size: str,
+    models_dir: Path,
+    fallback_size: str = "small",
+) -> Tuple[Optional[str], str]:
+    """
+    Resolve a model to weights already on disk, never to a download.
+
+    Returns (local_path, active_model_size). If the configured model is not in
+    models_dir, falls back to `fallback_size` when that one is on disk. If neither
+    is present, returns (None, model_size) so the caller can report it clearly
+    instead of letting mlx_whisper fetch weights from the network at runtime.
+    """
+    primary = resolve_model_path(model_size, models_dir)
+    if _is_local_dir(primary):
+        return primary, model_size
+
+    if fallback_size and fallback_size.lower() != model_size.lower():
+        fallback = resolve_model_path(fallback_size, models_dir)
+        if _is_local_dir(fallback):
+            logger.warning(
+                "Whisper model '%s' is not downloaded in %s. Using '%s' instead. "
+                "Download it with scripts/benchmark_whisper.py --models %s.",
+                model_size, models_dir, fallback_size, model_size,
+            )
+            return fallback, fallback_size
+
+    logger.error(
+        "No local Whisper weights found for '%s' (or fallback '%s') in %s. "
+        "Transcription is unavailable until a model is downloaded.",
+        model_size, fallback_size, models_dir,
+    )
+    return None, model_size
 
 
 def load_audio_array(audio: Union[str, Path, np.ndarray], target_sr: int = 16000) -> Tuple[np.ndarray, float]:
@@ -138,7 +180,10 @@ class MLXWhisperTranscriber(BaseTranscriber):
             target_peak_dbfs=-3.0,
             max_gain_db=20.0,
         )
-        self.model_path = resolve_model_path(config.model_size, config.models_dir)
+        local_path, active_size = resolve_local_model(config.model_size, config.models_dir)
+        # Model actually in use (may be the fallback if the configured one isn't downloaded)
+        self.active_model_size = active_size
+        self.model_path = local_path
 
         self._queue: queue.Queue = queue.Queue()
         self._ready_event = threading.Event()
@@ -198,11 +243,15 @@ class MLXWhisperTranscriber(BaseTranscriber):
 
         logger.info(
             "Loading Whisper model '%s' on dedicated worker thread (path=%s)...",
-            self.config.model_size,
+            self.active_model_size,
             self.model_path,
         )
 
         try:
+            if self.model_path is None:
+                raise FileNotFoundError(
+                    f"No local weights for Whisper model '{self.config.model_size}' in {self.config.models_dir}"
+                )
             # Warm up model on 0.5s of silence to compile Metal shaders
             warmup_audio = np.zeros(8000, dtype=np.float32)
             t0 = time.perf_counter()
@@ -213,7 +262,7 @@ class MLXWhisperTranscriber(BaseTranscriber):
                 initial_prompt=self.config.initial_prompt or None,
             )
             t1 = time.perf_counter()
-            logger.info("Whisper model '%s' warmed up successfully in %.2fs.", self.config.model_size, t1 - t0)
+            logger.info("Whisper model '%s' warmed up successfully in %.2fs.", self.active_model_size, t1 - t0)
         except Exception as e:
             logger.error("Failed to load/warmup Whisper model: %s", e, exc_info=True)
         finally:
@@ -269,7 +318,27 @@ class MLXWhisperTranscriber(BaseTranscriber):
         """Perform the actual mlx_whisper transcribe call on this worker thread."""
         import mlx_whisper
 
+        if self.model_path is None:
+            raise RuntimeError(
+                f"Whisper model '{self.config.model_size}' is not downloaded. "
+                "Run scripts/benchmark_whisper.py to fetch it."
+            )
+
         audio_array, duration_sec = load_audio_array(audio)
+
+        # Silence guard: large-v3-turbo invents text ("Thank you.") on digital silence, and its
+        # no_speech_prob is always 0, so Whisper's own check can't catch it. Real speech on this
+        # Mac peaks around -13 to -26 dBFS; below -60 dBFS there is nothing to transcribe.
+        raw_peak = float(np.max(np.abs(audio_array))) if audio_array.size else 0.0
+        if raw_peak < SILENCE_PEAK_THRESHOLD:
+            logger.debug("Skipping transcription of silent audio (peak %.2e).", raw_peak)
+            return TranscriptionResult(
+                text="",
+                language=self.config.language,
+                audio_duration_sec=duration_sec,
+                processing_time_sec=0.0,
+                applied_gain_db=0.0,
+            )
 
         # Determine whether to normalize audio before Whisper
         should_normalize = (

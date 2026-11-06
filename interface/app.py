@@ -1155,7 +1155,7 @@ class VoiceAssistantApp(rumps.App):
             f"├─────────────────────────────────────────────────────────\n"
             f"│ Latency Breakdown:\n"
             f"│ • Silence Wait:   {silence_wait_sec:.3f} s (VAD trailing silence)\n"
-            f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s (MLX Whisper '{self.config.whisper.model_size}')\n"
+            f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s (MLX Whisper '{getattr(self.transcriber, 'active_model_size', self.config.whisper.model_size)}')\n"
             f"│ • Rule Matching:  {rule_match_time_sec:.4f} s\n"
             f"│ • Action Exec:    {act_res.execution_time_sec:.4f} s (`open -a Notes`)\n"
             f"│ ────────────────────────────────────────────────────────\n"
