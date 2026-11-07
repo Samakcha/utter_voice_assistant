@@ -1,8 +1,8 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Working title:** TBD
-**Status:** v0.3.6 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1).
-**Last updated:** 6 November 2026
+**Status:** v0.3.7 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1).
+**Last updated:** 7 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
 
@@ -201,7 +201,7 @@ Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 565 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 584 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -235,7 +235,7 @@ voice-assistant/
   interface/                   app, hotkeys, key_events, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, eval_rules, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       565 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       584 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
 
 ~/Library/Application Support/VoiceAssistant/
@@ -274,7 +274,7 @@ voice-assistant/
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 565 passing |
+| Automated tests | 584 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -287,10 +287,15 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 
 ### 10.1 Accuracy score on the user's own voice (`scripts/accuracy.py`)
 - **Record** (`uv run python scripts/accuracy.py record`): shows one sentence at a time and saves the audio together with the exact sentence, so no transcripts are typed by hand. 78 fixed sentences in five groups (22 commands including 4 that must do nothing, 26 short and 14 long dictation sentences, 6 with numbers, 10 with tech words) plus one sentence per word-list term (up to 12). About 20 minutes; skip, redo and quit at any point, and it resumes by sentence text. Takes that are under 0.6 s or quieter than −45 dBFS prompt a redo. The microphone opens only while recording and is always closed on quit or Ctrl+C.
-- **Score** (`uv run python scripts/accuracy.py score`): runs every recording through the app's own steps (the configured local model, normalization and silence guard; the word-list hint, echo strip and correction for dictation; no word list and the command rules for commands). Reports % of words right (word-weighted, punctuation and case ignored) per group, how many commands would have done the right thing (right action, right name, or nothing), how many word-list terms were spelled exactly, and the same dictation scored without the word list. It also lists the worst mistakes. Offline only.
+- **Score** (`uv run python scripts/accuracy.py score`): runs every recording through the app's own steps (the configured local model, normalization and silence guard; the word-list hint, echo strip and correction for dictation; no word list and the command rules for commands). Reports % of words right (word-weighted) per group, how many commands would have done the right thing (right action, right name, or nothing), how many word-list terms were spelled exactly, and the same dictation scored without the word list. It also lists the worst mistakes. Offline only.
+- **What is not an error:** both sentences are rewritten into one standard form before words are compared: punctuation and capitals dropped, contractions expanded ("I'm" = "I am", "can't" = "cannot"; "it's" = "it is" and "I'd" = "I would" after common pronouns only), joined and split spellings unified ("every day" = "everyday", "OK" = "okay"), hyphens read as spaces, number words as digits ("two" = "2", "twenty five" = "25"), and "p.m." = "pm". Real mishearings still count ("notes" / "nodes", "its" / "it's").
 - **Storage:** recordings, the manifest and the reports go to `~/Library/Application Support/VoiceAssistant/accuracy/`, never the project folder; deleting that folder removes everything.
-- **Limits:** long sentences are scored whole, while the app splits dictation at pauses; number formatting ("10" vs "ten") counts as an error; the score is for the microphone used while recording.
-- **Checked on synthesized speech** (9 sentences, turbo): 98.1% of dictation words right; 3 of 4 commands right (the Mac voice's "WhatsApp" was heard as "Vharts app", a synthetic-voice quirk seen before). The real score needs the user's recordings.
+- **Limits:** long sentences are scored whole, while the app splits dictation at pauses; ordinals ("15th" vs "fifteenth") and accents ("MADRÉ" vs "Madre") still count as errors; the score is for the microphone used while recording.
+- **Checked on synthesized speech** (9 sentences, turbo): 98.1% of dictation words right; 3 of 4 commands right (the Mac voice's "WhatsApp" was heard as "Vharts app", a synthetic-voice quirk seen before). - **First real results (7 November 2026, turbo, the user's voice):**
+  - *Dictation, CMF Buds 2 Plus earbuds:* 99.1% of words right (7 errors in 787 words; 96.9% before the spelling-only fix, when 17 of the 24 errors were "I'm" / "I am" and similar). Short 99.6%, long 99.7%, numbers 93.3%, tech words 100%, word-list sentences 97.0%.
+  - *Word list:* 7 of 9 terms spelled exactly with the list, 1 of 9 without it.
+  - *Commands, earbuds:* 19 of 22; the 4 do-nothing phrases all did nothing. *Commands, MacBook Air microphone:* **22 of 22**.
+  - *Cause of the earbud misses:* the earbuds mute the signal to exact digital silence between sounds and cut the soft start of a word (4 of 22 command takes started mid-word; none with the built-in mic). "open notes" lost "open" and came out "Totes". Tested and rejected as fixes, on all 87 recordings plus 20 older ones: retrying with a hint of the command phrases (3 wordings), trimming silence; none changed the result. Adding the word list (with the names) as a hint for commands fixed the "Rahul" → "Lahun" miss with no false triggers, but is not built.
 
 ## 11. Lessons learned (bugs found and fixed)
 

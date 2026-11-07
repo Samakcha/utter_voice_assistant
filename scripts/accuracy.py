@@ -45,10 +45,91 @@ from engine.commands import match_command
 from engine.config import DEFAULT_DATA_DIR
 
 
-def normalize_text(text: str) -> str:
-    """Lowercase, drop punctuation, collapse spaces (same rule as benchmark_whisper.py)."""
-    text = re.sub(r"[^\w\s]", "", text.lower())
-    return " ".join(text.split())
+# ---- Scoring words: spelling-only differences are not errors -----------------------------
+# "I'm" / "I am", "every day" / "everyday", "two" / "2" and "3 pm" / "3 p.m." mean the same
+# thing, so both sides are rewritten into one form before words are compared. Real
+# mishearings ("notes" / "nodes", "eggs" / "x") still count.
+
+# Unambiguous contraction endings, expanded
+_CONTRACTION_SPECIAL = {"won't": "will not", "can't": "can not", "shan't": "shall not", "ain't": "is not"}
+_CONTRACTION_SUFFIXES = [("n't", " not"), ("'m", " am"), ("'ll", " will"), ("'ve", " have"), ("'re", " are")]
+
+# "'s" (is / has / possessive) and "'d" (would / had) can't be expanded safely, so the
+# long forms are contracted instead, only after these words.
+_S_WORDS = {"it", "he", "she", "that", "there", "here", "what", "who", "where", "how", "when", "why"}
+_D_WORDS = {"i", "you", "he", "she", "we", "they", "it", "that", "there", "who"}
+
+# One spelling for words written either joined or apart
+_SAME_WORD = {
+    "everyday": "every day", "anymore": "any more", "alright": "all right",
+    "cannot": "can not", "ok": "okay",
+}
+
+_NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19,
+}
+_TENS_WORDS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+               "seventy": 70, "eighty": 80, "ninety": 90}
+
+
+def _expand_contraction(word: str) -> str:
+    if word in _CONTRACTION_SPECIAL:
+        return _CONTRACTION_SPECIAL[word]
+    for suffix, expansion in _CONTRACTION_SUFFIXES:
+        if word.endswith(suffix) and len(word) > len(suffix):
+            return word[: -len(suffix)] + expansion
+    return word
+
+
+def _join_numbers(words: List[str]) -> List[str]:
+    out: List[str] = []
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in _TENS_WORDS:
+            value = _TENS_WORDS[w]
+            nxt = words[i + 1] if i + 1 < len(words) else ""
+            if nxt in _NUMBER_WORDS and 1 <= _NUMBER_WORDS[nxt] <= 9:
+                value += _NUMBER_WORDS[nxt]
+                i += 1
+            out.append(str(value))
+        elif w in _NUMBER_WORDS:
+            out.append(str(_NUMBER_WORDS[w]))
+        else:
+            out.append(w)
+        i += 1
+    return out
+
+
+def score_words(text: str) -> List[str]:
+    """
+    The words of a sentence in one standard form, for scoring: lowercase, no punctuation,
+    contractions expanded, joined/split spellings unified, number words as digits.
+    """
+    text = (text or "").lower().replace("’", "'").replace("‘", "'")
+    text = re.sub(r"\b([ap])\.?\s?m\b\.?", r"\1m", text)  # "p.m.", "p m" -> "pm"
+    text = re.sub(r"[-–—/]", " ", text)  # "two-factor" = "two factor"
+    raw = [w.strip("'") for w in re.findall(r"[\w']+", text)]
+    words: List[str] = []
+    for w in raw:
+        if not w:
+            continue
+        for part in _expand_contraction(w).split():
+            words.extend(_SAME_WORD.get(part, part).split())
+    # Contract "it is" -> "it's", "I would" -> "I'd" (the ambiguous contractions)
+    merged: List[str] = []
+    for w in words:
+        prev = merged[-1] if merged else ""
+        if w in ("is", "has") and prev in _S_WORDS:
+            merged[-1] = prev + "'s"
+        elif w in ("would", "had") and prev in _D_WORDS:
+            merged[-1] = prev + "'d"
+        else:
+            merged.append(w)
+    return _join_numbers(merged)
 
 PROMPTS_FILE = Path(__file__).resolve().parent / "accuracy_prompts.csv"
 DEFAULT_ACCURACY_DIR = DEFAULT_DATA_DIR.expanduser() / "accuracy"
@@ -304,9 +385,9 @@ def _record_loop(folder, items, todo, done_count, input_fn, recorder) -> int:
 # ---- Scoring -------------------------------------------------------------------------
 
 def word_errors(reference: str, hypothesis: str) -> int:
-    """Word-level edit distance (substitutions + insertions + deletions)."""
-    ref = normalize_text(reference).split()
-    hyp = normalize_text(hypothesis).split()
+    """Word-level edit distance (substitutions + insertions + deletions) on score_words()."""
+    ref = score_words(reference)
+    hyp = score_words(hypothesis)
     prev = list(range(len(hyp) + 1))
     for i in range(1, len(ref) + 1):
         cur = [i] + [0] * len(hyp)
@@ -381,7 +462,7 @@ def score_recordings(folder: Path, pipeline: AppPipeline, compare: bool = True,
             progress(i, len(rows))
         path = folder / row["file"]
         expected = row["text"]
-        words = len(normalize_text(expected).split())
+        words = len(score_words(expected))
         if row["category"] == "command":
             heard = pipeline.command(path)
             results.append(ScoredItem(
@@ -492,9 +573,9 @@ def format_report(results: Sequence[ScoredItem], summary: Dict[str, Dict[str, fl
         add(f"{CATEGORY_LABELS.get(cat, cat):<18} {int(s['count']):>10} {int(s['words']):>7} "
             f"{int(s['errors']):>7} {s['right']:>7.1f}%")
     add("")
-    add("Notes: punctuation and capitals are ignored. Numbers can count as errors just for")
-    add("formatting (\"10\" vs \"ten\"). Long sentences are scored as one piece; the app splits")
-    add("dictation at pauses, which can differ slightly.")
+    add("Notes: spelling-only differences are not errors: punctuation, capitals, \"I'm\" vs")
+    add("\"I am\", \"every day\" vs \"everyday\", \"two\" vs \"2\". Long sentences are scored as one")
+    add("piece; the app splits dictation at pauses, which can differ slightly.")
 
     wrong_cmds = [r for r in results if r.command_ok is False]
     if wrong_cmds:
