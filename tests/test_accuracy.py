@@ -179,6 +179,41 @@ def test_word_errors_counts_edits_and_ignores_punctuation_and_case():
     assert acc.word_errors("", "") == 0
 
 
+@pytest.mark.parametrize("said, heard", [
+    ("I'm running a little late.", "I am running a little late."),
+    ("I'll review it and I've added notes.", "I will review it and I have added notes."),
+    ("Don't forget, we're late and they can't wait.", "Do not forget, we are late and they cannot wait."),
+    ("It won't work.", "It will not work."),
+    ("It's raining and that's fine.", "It is raining and that is fine."),
+    ("I'd like that.", "I would like that."),
+    ("I’m here.", "I'm here."),  # curly apostrophe
+    ("matter every day", "matter everyday"),
+    ("Turn on two-factor authentication.", "Turn on two factor authentication."),
+    ("I need 2 tickets.", "I need two tickets."),
+    ("about 25 people", "about twenty five people"),
+    ("The meeting starts at 3 pm.", "The meeting starts at 3 p.m."),
+    ("That's okay.", "That's OK."),
+])
+def test_spelling_only_differences_are_not_errors(said, heard):
+    assert acc.word_errors(said, heard) == 0, (acc.score_words(said), acc.score_words(heard))
+
+
+@pytest.mark.parametrize("said, heard, errors", [
+    ("Add it to the notes.", "Add it to the nodes.", 1),
+    ("Please buy 6 apples and 12 eggs.", "Please buy 6 apples and 12x.", 2),
+    ("I need 2 tickets for the show.", "I need two tickets for this show.", 1),
+    ("I'm leaving now.", "I was leaving now.", 1),  # "I am" vs "I was": still wrong
+    ("its tail", "it's tail", 1),  # its / it's are different words
+])
+def test_real_mistakes_still_count(said, heard, errors):
+    assert acc.word_errors(said, heard) == errors
+
+
+def test_possessives_and_names_are_kept():
+    assert acc.score_words("Rahul's phone") == ["rahul's", "phone"]
+    assert acc.score_words("Search WhatsApp for Mom.") == ["search", "whatsapp", "for", "mom"]
+
+
 def test_command_correct_checks_action_name_and_do_nothing():
     assert acc.command_correct("Open notes.", "open_notes", "")
     assert not acc.command_correct("Open nodes, please now", "open_notes", "")
