@@ -1,8 +1,8 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Working title:** TBD
-**Status:** v0.3.7 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1).
-**Last updated:** 7 November 2026
+**Status:** v0.3.8 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12).
+**Last updated:** 14 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
 
@@ -44,7 +44,7 @@ Dictation tools turn speech into text but do not act on instructions. A user who
 - **Phase 1 (now):** the developer, testing on their own Mac.
 - **Phase 2 (later):** other Mac users who want private, local dictation and voice commands.
 
-## 5. Core Concept: Two Hotkeys, Four Voice Commands
+## 5. Core Concept: Two Hotkeys, Five Voice Commands
 
 The hotkey tells the app the user's intent, so it never guesses whether speech is dictation or a command.
 
@@ -64,6 +64,7 @@ All hotkeys are handled by **one single keyboard listener** (see section 11 for 
 | `take_note` | "start taking notes", "take a note", "new note", "create a note", "make a note" | Starts a note session that saves one new note. |
 | `open_whatsapp` | "open WhatsApp", "launch whatsapp", "bring up whatsapp" | Launches and brings WhatsApp forward. |
 | `whatsapp_search` | "search for `<name>`", "find `<name>`", "search whatsapp for `<name>`" | Types the name into WhatsApp's own search box (WhatsApp must already be in front). |
+| `open_app` | "open Safari", "launch Calculator", "switch to Finder", "bring up Activity Monitor", "open settings" | Opens any installed app (6.12). Tried last, so the four commands above keep priority. Unknown or ambiguous names open nothing. |
 
 ## 6. Functional Requirements
 
@@ -77,7 +78,8 @@ All hotkeys are handled by **one single keyboard listener** (see section 11 for 
 1. Press the hotkey; the app starts listening.
 2. Silero VAD detects speech. Recording **auto-stops after trailing silence** (default 1.5 s; see tuning note in 12.4). If no speech starts within 5 s, the session cancels quietly.
    - **Early finish** (`command_early_check_sec = 0.6`): after 0.6 s of silence the speech so far is transcribed in the background. If it is a complete *fixed* command (`open_notes`, `take_note`, `open_whatsapp`) and the user has still not spoken when the result is ready, the session ends and the command runs at once, reusing that transcript (no second transcription). End of speech to action drops from about 1.9 s to about 1.0 s with `large-v3-turbo`.
-   - **Never early:** WhatsApp search (the name may still be continuing, "Rahul" ... "Sharma"), anything unrecognized, and any pause the user speaks after. These wait the full 1.5 s and are transcribed in full, as before.
+   - **Open an app early** only when the name surely names one installed app (alias, exact or compact match) and no longer app name starts with it: "open Calculator" runs at the pause, "open Antigravity" waits in case "IDE" follows.
+   - **Never early:** WhatsApp search (the name may still be continuing, "Rahul" ... "Sharma"), app names found only by a partial or fuzzy match, anything unrecognized, and any pause the user speaks after. These wait the full 1.5 s and are transcribed in full, as before.
    - **Why not just lower the timeout:** the rules deliberately ignore longer phrases that start like a command ("take a note about groceries", "open WhatsApp and search Rahul": 21 such phrases in the evaluation set). A shorter timeout would cut those off for every command; early finish only acts after about 1 s of real silence on a phrase that is already complete.
 3. The audio is transcribed by Whisper on a dedicated worker thread.
 4. The transcript goes through the **rule layer** (whole-utterance grammar). No LLM is used.
@@ -87,11 +89,12 @@ All hotkeys are handled by **one single keyboard listener** (see section 11 for 
 ### 6.3 Rule layer (`engine/commands.py`)
 The whole normalized utterance must match a command's grammar: lowercase, punctuation stripped, whitespace collapsed, then a fully anchored pattern.
 
-- **Verbs for opening:** `open`, `open up`, `launch`, `bring up`. (`show` and `start` are deliberately excluded: "show notes" is common speech.)
+- **Verbs for opening:** `open`, `open up`, `launch`, `bring up` (and `switch to` for apps). (`show` and `start` are deliberately excluded: "show notes" is common speech.)
 - **Politeness wrappers accepted:** "can you", "could you", "would you", "will you", "please", "just", "kindly", "hey", "hi", "hello", "go ahead and", and suffixes "please", "for me", "thanks", "thank you".
 - **Whisper variants accepted:** `note`, `notes`, `node`, `nodes` (Whisper really produced "nodes" and the singular "note").
 - **Deliberate rejections:** "open a note" (means a specific note, not the app), "open the notes folder", "I took some notes yesterday", "don't open notes", "open notes and send it to someone", "take notes from the meeting" (extra words are rejected).
 - **No overlap:** an automated test checks that no phrase in the evaluation CSV matches more than one command.
+- **`open_app` name slot:** 1 to 5 words; never starting with a, an, some, it, this, that; never containing note/notes/node/nodes/whatsapp or connectors (and, then, also, after, before, later, today, tomorrow, now, when, while, because, so). This keeps "open a note", "open notes folder" and "open WhatsApp and search Alex" non-commands, as before. Only "open safari" and "launch terminal" changed from no-command to `open_app` in the evaluation set.
 - **`whatsapp_search` name slot:** 1 to 4 words; letters in any script (including Devanagari), apostrophes and hyphens; single-letter middle initials allowed; digits and symbols rejected; names beginning with reserved words (the, a, an, my, notes, note, whatsapp, chat, app) rejected.
 
 ### 6.4 Dictation mode (`Control + Option + D`)
@@ -181,6 +184,17 @@ Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "
    - Without the system dictionary (for example a future Windows build) only exact fixes run.
 6. **Settings:** `auto_correct = false` keeps the hint but never rewrites text; `enabled = false` turns off both.
 
+### 6.12 Open any installed app (`engine/apps.py`)
+Milestone 1. "Open Safari", "launch Calculator", "switch to Finder": any app on the Mac, with no list to maintain.
+
+1. **App list:** built by listing `/Applications`, `/Applications/Utilities`, `/System/Applications`, `/System/Applications/Utilities`, `~/Applications` (and one plain subfolder level, such as "Python 3.12"), plus Finder. Each app's `Info.plist` is read for its bundle id and other names ("Code" for Visual Studio Code, "Voice Memos" for VoiceMemos). Background-only and hidden apps are skipped; duplicates (same bundle id) are kept once. About 80 apps in 0.03 s on the development Mac. No Spotlight, nothing sent anywhere.
+2. **When:** scanned in the background at start, and again when a name is not found (at most every 5 s), so an app installed while the assistant runs is found without a restart.
+3. **Matching levels** (the first level with any match decides): your aliases, then built-in aliases ("chrome" → Google Chrome, "settings" / "system preferences" → System Settings, "quicktime", "vs code", Microsoft Office short names; only if the app is installed) → exact name → compact, spaces ignored ("face time" → FaceTime, "chat gpt" → ChatGPT, "x code" → Xcode) → partial, every spoken word a whole word of exactly one app ("activity" → Activity Monitor; generic words such as "app", "pro", "player" never count) → fuzzy, one slip in a name of 5 to 8 letters or two in 9+ ("spotifi" → Spotify), only if one app is clearly closest. "the", "my" and a trailing "app" are ignored.
+4. **Refusals:** an unknown name opens nothing and the overlay says `No app called "door"`; a name matching two or more apps at the same level opens nothing and lists them ("Which app: Google Chrome or Google Drive? Say the full name."). These show as "Nothing opened", not as a failure.
+5. **Launch:** `open <path of the .app>` with an argument list (no shell), only for a real `.app` folder found by the scan.
+6. **Settings** (`[apps]`): `enabled = true`; `[apps.aliases]` maps what you say to an app's Finder name, for names Whisper hears differently (for example `cloud = "Claude"`).
+7. **Checked:** 74 automated tests; every app sentence in the accuracy set resolves correctly against this Mac's 82 apps; 16 phrases spoken by the Mac's synthetic voice and transcribed by turbo all did the right thing (14 opened the right app, "open the door" and "open Safari and search for flights" opened nothing). Not yet tested live by the user.
+
 ## 7. Technical Approach
 
 ### 7.1 Stack
@@ -201,7 +215,7 @@ Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 584 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 657 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -230,12 +244,12 @@ voice-assistant/
   main.py                      entry point (startup is a function, so tests can run it)
   config.toml                  all tunable values, every key commented
   engine/                      audio_capture, vad, session, transcriber, audio_utils, commands,
-                               actions, stop_phrases, chunk_joiner, insertion, notes_writer, vocabulary,
+                               actions, apps, stop_phrases, chunk_joiner, insertion, notes_writer, vocabulary,
                                config, models
   interface/                   app, hotkeys, key_events, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, eval_rules, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       584 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       657 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
 
 ~/Library/Application Support/VoiceAssistant/
@@ -274,7 +288,7 @@ voice-assistant/
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 584 passing |
+| Automated tests | 657 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -286,7 +300,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 - **Working agreement with the coding agent:** plan first and wait for approval; never report a pass for anything it could not actually run; never drive or inspect the user's WhatsApp from its own shell.
 
 ### 10.1 Accuracy score on the user's own voice (`scripts/accuracy.py`)
-- **Record** (`uv run python scripts/accuracy.py record`): shows one sentence at a time and saves the audio together with the exact sentence, so no transcripts are typed by hand. 78 fixed sentences in five groups (22 commands including 4 that must do nothing, 26 short and 14 long dictation sentences, 6 with numbers, 10 with tech words) plus one sentence per word-list term (up to 12). About 20 minutes; skip, redo and quit at any point, and it resumes by sentence text. Takes that are under 0.6 s or quieter than −45 dBFS prompt a redo. The microphone opens only while recording and is always closed on quit or Ctrl+C.
+- **Record** (`uv run python scripts/accuracy.py record`): shows one sentence at a time and saves the audio together with the exact sentence, so no transcripts are typed by hand. 78 fixed sentences in five groups (22 commands including 4 that must do nothing, 26 short and 14 long dictation sentences, 6 with numbers, 10 with tech words) plus one sentence per word-list term (up to 12). v0.3.8 adds 10 app commands (c23 to c32: 8 apps that ship with macOS, plus "open the door" and "open Safari and search for flights", which must open nothing); app commands are scored by which installed app would open. About 20 minutes; skip, redo and quit at any point, and it resumes by sentence text. Takes that are under 0.6 s or quieter than −45 dBFS prompt a redo. The microphone opens only while recording and is always closed on quit or Ctrl+C.
 - **Score** (`uv run python scripts/accuracy.py score`): runs every recording through the app's own steps (the configured local model, normalization and silence guard; the word-list hint, echo strip and correction for dictation; no word list and the command rules for commands). Reports % of words right (word-weighted) per group, how many commands would have done the right thing (right action, right name, or nothing), how many word-list terms were spelled exactly, and the same dictation scored without the word list. It also lists the worst mistakes. Offline only.
 - **What is not an error:** both sentences are rewritten into one standard form before words are compared: punctuation and capitals dropped, contractions expanded ("I'm" = "I am", "can't" = "cannot"; "it's" = "it is" and "I'd" = "I would" after common pronouns only), joined and split spellings unified ("every day" = "everyday", "OK" = "okay"), hyphens read as spaces, number words as digits ("two" = "2", "twenty five" = "25"), and "p.m." = "pm". Real mishearings still count ("notes" / "nodes", "its" / "it's").
 - **Storage:** recordings, the manifest and the reports go to `~/Library/Application Support/VoiceAssistant/accuracy/`, never the project folder; deleting that folder removes everything.
@@ -344,21 +358,36 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 
 ## 14. Parked ideas (designed or discussed, not built)
 
-1. **Open any installed app by voice:** an in-memory app inventory with matching levels (alias, exact, compact form such as "x code" for Xcode, unique partial name, strict fuzzy), refusal on ambiguity or unknown names, launching only from a resolved bundle path with an argument list. Notes and WhatsApp commands keep priority. A full prompt exists.
-2. **"Open the Nth WhatsApp chat":** needs a more reliable row-detection test.
-3. **LLM fallback** for flexible phrasing (original Step 4), benchmarked against the rules, off by default.
-4. **Settings screen, native Swift interface, packaging, code signing, permission onboarding.**
-5. **Read-back of notes, sending a message by voice** (would need a confirmation overlay with Enter/Esc, and is high risk).
-6. **Dictation cleanup** (filler words, punctuation), model options for lower-memory Macs, optional cloud models.
+1. **"Open the Nth WhatsApp chat":** needs a more reliable row-detection test.
+2. **LLM fallback** for flexible phrasing (original Step 4), benchmarked against the rules, off by default.
+3. **Native Swift interface** (packaging, settings and onboarding are Milestone 3).
+4. **Read-back of notes, sending a message by voice** (would need a confirmation overlay with Enter/Esc, and is high risk).
+5. **Model options** for lower-memory Macs, optional cloud models. (Dictation cleanup is Milestone 2.)
+6. **Choosing between ambiguous apps by voice** ("the first one") instead of saying the full name.
 
-## 15. Next steps
+## 15. Next steps: three milestones
 
-1. Try hold-to-talk live: hold `Control + Option + D`, speak, let go (text pastes); tap it for toggle as before; check that holding it in a text field makes no beep and types nothing.
-2. Choose the next feature from section 14.
-3. Record the accuracy set (10.1, about 20 minutes, with the microphone normally used for dictation) and run the score; use the worst mistakes to decide the next accuracy fix (word list entries, `hold_min_sec`, model or prompt changes). Re-score after any such change.
-4. Re-measure end of speech to action live with `large-v3-turbo` (fixed commands and WhatsApp search).
-5. Fill the personal word list with real names and terms and test it live; note any word it changed that it should not have.
-6. Decide whether WhatsApp search (command mode) should also use the word list for contact names.
+Agreed on 14 November 2026. Each milestone is built on its own branch, measured where possible, and tested by hand by the user before the next one starts.
+
+### Milestone 1: More commands (open any app by voice) — built in v0.3.8, waiting for the user's live test
+- "Open Safari", "launch Calculator", "switch to Finder": any app installed on the Mac, with no list to maintain (6.12).
+- Safe by design: unknown names and names that could mean two apps do nothing and say why; Notes and WhatsApp commands keep priority; apps launch only from a path found on disk.
+- Accuracy sentences for app commands added to the recorder, so the result can be scored on the user's voice.
+- Optional, small: WhatsApp search names from the word list (decision pending, see 12.1).
+
+### Milestone 2: Nicer dictation (cleanup)
+- Remove filler words ("um", "uh"), accidental repeats ("the the") and simple self-corrections, with rules only (offline, no LLM).
+- Measured before and after on the user's recorded sentences; nothing ships that lowers the score.
+
+### Milestone 3: A real Mac app (v1.0)
+- A double-clickable app with an icon that starts at login, instead of `uv run` in a terminal.
+- A small settings window (hotkeys, word list), a first-run guide for Microphone and Accessibility permission.
+- Choose the final product name; packaging and code signing.
+
+### Ongoing checks
+- Re-measure end of speech to action live with `large-v3-turbo` (fixed commands, app launch, WhatsApp search).
+- Use the MacBook microphone for commands; the CMF Buds cut the start of short words (10.1).
+- Decide what to do with the older `recordings/` and `note_backups/` in the project folder.
 
 ## 16. Open questions
 
@@ -374,10 +403,11 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 - Dictation hotkey: tap to toggle or hold to talk (0.4 s threshold, 0.3 s release tail); the app swallows its own hotkeys; falls back to tap-only without Accessibility.
 - Fixed commands finish early once recognized during a 0.6 s pause; anything with a name waits the full 1.5 s.
 - Python 3.12; MLX Whisper `large-v3-turbo` with a local `small` fallback, offline at runtime; Silero VAD (threshold 0.35); audio normalization; no LLM.
-- Commands: open Notes, take a note, open WhatsApp, search WhatsApp. Whole-utterance rules; "open a note" deliberately not a command.
+- Commands: open Notes, take a note, open WhatsApp, search WhatsApp, open any app. Whole-utterance rules; "open a note" deliberately not a command.
 - Dictation: chunked background transcription, one paste at the end, stop phrases at the end of speech only, clipboard save and restore.
 - Notes saved through AppleScript with arguments; failures never lose text.
 - WhatsApp: no contacts file; dual frontmost guard; only Cmd+F and Cmd+V; the user sends messages manually.
 - Privacy by design: no session audio written to disk by default, personal data in `~/Library/Application Support/VoiceAssistant/`, names redacted at the source, audio deleted early for WhatsApp, fake names in all tests.
 - Personal word list for dictation and notes: hinted to Whisper, strict post-correction, stored with personal data, never used for commands.
-- Open-any-app, WhatsApp Nth-chat and the LLM fallback are parked.
+- Open any installed app by voice (Milestone 1): strict matching levels, refusal on unknown or ambiguous names, launch by path only, Notes and WhatsApp keep priority.
+- WhatsApp Nth-chat and the LLM fallback are parked.

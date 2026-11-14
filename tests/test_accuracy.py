@@ -32,14 +32,35 @@ def test_prompt_file_is_well_formed():
             assert not i.expected_action, i.id
 
 
+def _builtin_apps():
+    """The macOS apps the app-command sentences use (all ship with macOS)."""
+    from engine.apps import AppEntry, AppInventory
+    names = ["Safari", "Calculator", "System Settings", "FaceTime", "Activity Monitor", "Finder",
+             "Calendar", "Notes", "WhatsApp"]
+    return AppInventory(scanner=lambda: [AppEntry(n, Path(f"/System/Applications/{n}.app")) for n in names])
+
+
 def test_command_sentences_agree_with_the_rules():
     """Said perfectly, every command sentence must do exactly what the list expects."""
+    apps = _builtin_apps()
     for item in acc.load_prompts():
         if item.category != "command":
             continue
-        assert acc.command_correct(item.text, item.expected_action, item.expected_name), item
+        assert acc.command_correct(item.text, item.expected_action, item.expected_name, apps=apps), item
         m = match_command(item.text)
-        assert (m.action_id if m else "none") == item.expected_action, item
+        if item.expected_action != "none":
+            assert m.action_id == item.expected_action, item
+
+
+def test_app_commands_are_scored_by_what_would_open():
+    apps = _builtin_apps()
+    assert acc.command_correct("Open Safari.", "open_app", "Safari", apps=apps)
+    assert acc.command_correct("Open settings.", "open_app", "System Settings", apps=apps)
+    assert not acc.command_correct("Open Safaris and more.", "open_app", "Safari", apps=apps)
+    assert acc.command_correct("Open the door.", "none", "", apps=apps)       # no such app
+    assert not acc.command_correct("Open Calculator.", "none", "", apps=apps)
+    # without an app list the spoken name is compared as said
+    assert acc.command_correct("Open the Safari app.", "open_app", "Safari")
 
 
 def test_word_list_sentences_rotate_templates_and_are_capped():

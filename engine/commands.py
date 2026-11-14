@@ -159,6 +159,42 @@ def validate_extracted_name(raw_name: str) -> Optional[str]:
     return " ".join(words)
 
 
+# Regex components for the "open <any app>" command. It is tried LAST, so Notes and
+# WhatsApp keep their own commands. Only the grammar is checked here; whether the name is
+# an installed app is decided by engine/apps.py (unknown names do nothing).
+_OPEN_APP_VERB = r"(?:open(?:\s+up)?|launch|bring\s+up|switch\s+to)"
+_OPEN_APP_PATTERN = re.compile(
+    rf"^{_POLITENESS_PREFIX}{_OPEN_APP_VERB}\s+(?P<raw_name>.+?){_POLITENESS_SUFFIX}$",
+    re.IGNORECASE,
+)
+
+# A spoken app name never starts with these, and never contains the Notes/WhatsApp words
+# or sentence connectors: "open a note", "open notes folder", "open WhatsApp and search
+# Alex" stay non-commands, exactly as before.
+_APP_NAME_BAD_START = {"a", "an", "some", "up", "it", "this", "that", "them", "me", "please"}
+_APP_NAME_FORBIDDEN = {
+    "note", "notes", "node", "nodes", "whatsapp", "and", "then", "also", "after", "before",
+    "later", "today", "tomorrow", "tonight", "now", "when", "while", "because", "so",
+}
+MAX_APP_NAME_WORDS = 5
+
+
+def validate_app_name(raw_name: str) -> Optional[str]:
+    """Clean the spoken app name, or None if it can't be an app name."""
+    if not raw_name:
+        return None
+    words = normalize_command_text(raw_name).split()
+    if not (1 <= len(words) <= MAX_APP_NAME_WORDS):
+        return None
+    if words[0] in _APP_NAME_BAD_START:
+        return None
+    if any(w in _APP_NAME_FORBIDDEN for w in words):
+        return None
+    # Keep the original spelling for display ("Google Chrome"), minus trailing punctuation
+    cleaned = raw_name.strip().rstrip(".,?!;:\"'—–-").strip(" \t\n\r\"'")
+    return cleaned or None
+
+
 # Commands with nothing open-ended in them. Only these may run before the full command
 # silence timeout (early finish), because there is nothing more the user could add.
 # WhatsApp search is excluded: the name could still be continuing ("Rahul" ... "Sharma").
@@ -215,6 +251,22 @@ def match_command(text: str) -> Optional[CommandMatch]:
                 normalized_text=normalized,
                 matched_variant="whatsapp_search",
                 extracted_name=extracted,
+            )
+
+    app_m = _OPEN_APP_PATTERN.match(normalized)
+    if app_m:
+        # Take the name from the original text so its capitals survive ("Google Chrome")
+        original = re.match(
+            rf"^\W*{_POLITENESS_PREFIX}{_OPEN_APP_VERB}\s+(?P<raw_name>.+?){_POLITENESS_SUFFIX}\W*$",
+            clean_text, re.IGNORECASE,
+        )
+        name = validate_app_name(original.group("raw_name") if original else app_m.group("raw_name"))
+        if name:
+            return CommandMatch(
+                action_id="open_app",
+                normalized_text=normalized,
+                matched_variant="open_app",
+                extracted_name=name,
             )
 
     return None

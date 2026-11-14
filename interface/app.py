@@ -11,7 +11,8 @@ from typing import Dict, List, Optional
 import AppKit
 import rumps
 
-from engine.actions import ActionResult, execute_action_async
+from engine.actions import ActionResult, execute_action_async, launch_app
+from engine.apps import STATUS_AMBIGUOUS, AppInventory
 from engine.chunk_joiner import join_transcription_chunks
 from engine.commands import CommandMatch, allows_early_finish, match_command
 from engine.config import AppConfig
@@ -95,6 +96,12 @@ class VoiceAssistantApp(rumps.App):
         # Personal word list (dictation and notes only); re-read automatically when edited
         self.vocabulary = VocabularyStore(config.vocabulary.file)
 
+        # Installed apps for "open <app>" (scanned in the background at start, and again
+        # when a spoken name is not found). None when [apps] enabled = false.
+        self.app_inventory: Optional[AppInventory] = (
+            AppInventory(aliases=config.apps.aliases) if config.apps.enabled else None
+        )
+
         # Dictation session state tracking
         self._dictation_session_id: Optional[str] = None
         self._dictation_chunks: Dict[int, str] = {}
@@ -176,7 +183,9 @@ class VoiceAssistantApp(rumps.App):
         logger.info("Voice Assistant is ready for voice sessions.")
 
     def start_listeners(self) -> None:
-        """Start hotkey listener."""
+        """Start hotkey listener (and list the installed apps in the background)."""
+        if self.app_inventory is not None:
+            threading.Thread(target=self.app_inventory.refresh, name="app-list", daemon=True).start()
         try:
             self.hotkey_manager.start()
         except HotkeyRegistrationError as e:
@@ -358,7 +367,7 @@ class VoiceAssistantApp(rumps.App):
     def _on_early_command_transcript(self, session_id: str, pause_id: int, tx_res: TranscriptionResult) -> None:
         """If the speech so far is a complete fixed command, end the session now."""
         match = match_command(tx_res.text)
-        if not allows_early_finish(match):
+        if not (allows_early_finish(match) or self._app_name_is_complete(match)):
             return  # not a fixed command (or a WhatsApp search): wait for the full timeout
 
         with self._early_command_lock:
@@ -374,6 +383,69 @@ class VoiceAssistantApp(rumps.App):
 
         # Own thread: never stop the audio stream from the audio or transcriber thread
         threading.Thread(target=_finish, name="command-early-finish", daemon=True).start()
+
+    def _app_name_is_complete(self, match: Optional[CommandMatch]) -> bool:
+        """'open <app>' may finish early only when the name surely names one app and no longer
+        app name starts with it ("open Calculator" yes; "open Antigravity" waits for "IDE")."""
+        if match is None or match.action_id != "open_app" or self.app_inventory is None:
+            return False
+        try:
+            return self.app_inventory.can_finish_early(match.extracted_name or "")
+        except Exception as e:
+            logger.debug("App early-finish check failed: %s", e)
+            return False
+
+    def _run_open_app(
+        self,
+        match: CommandMatch,
+        tx_result: TranscriptionResult,
+        session_result: SessionResult,
+        rule_match_time_sec: float,
+        log_text: str,
+    ) -> None:
+        """Find the spoken app and open it, on a worker thread. Unknown or ambiguous: open nothing."""
+        spoken = match.extracted_name or ""
+        if self.overlay is not None:
+            self.overlay.show_action_start(tx_result.text, "Opening...")
+
+        def _worker():
+            try:
+                res = None if self.app_inventory is None else self.app_inventory.resolve_or_refresh(spoken)
+                if self.app_inventory is None:
+                    act_res = ActionResult(
+                        success=False, action_id="open_app",
+                        message="Opening apps by voice is off ([apps] enabled in config.toml)",
+                    )
+                elif res is not None and res.found:
+                    act_res = launch_app(res.app.path, res.app.name)
+                    logger.info("Open app: \"%s\" -> %s (%s match)", spoken, res.app.name, res.level)
+                elif res is not None and res.status == STATUS_AMBIGUOUS:
+                    names = [c.name for c in res.candidates]
+                    listed = ", ".join(names[:-1]) + " or " + names[-1]
+                    act_res = ActionResult(
+                        success=False, action_id="open_app",
+                        message=f"Which app: {listed}? Say the full name.",
+                    )
+                    logger.info("Open app: \"%s\" could mean %s; opened nothing.", spoken, listed)
+                else:
+                    shown = (res.spoken if res is not None and res.spoken else spoken)
+                    act_res = ActionResult(
+                        success=False, action_id="open_app",
+                        message=f'No app called "{shown}"',
+                    )
+                    logger.info("Open app: no installed app matches \"%s\"; opened nothing.", shown)
+            except Exception as e:
+                logger.error("Open app failed: %s", e, exc_info=True)
+                act_res = ActionResult(
+                    success=False, action_id="open_app", message="Could not open the app", error=str(e),
+                )
+            run_on_main_thread(
+                lambda: self._handle_action_result(
+                    act_res, match, tx_result, session_result, rule_match_time_sec, log_text,
+                )
+            )
+
+        threading.Thread(target=_worker, name="action-worker-open_app", daemon=True).start()
 
     def _take_early_command(self, session_id: str) -> Optional[TranscriptionResult]:
         with self._early_command_lock:
@@ -1158,7 +1230,12 @@ class VoiceAssistantApp(rumps.App):
             )
             return
 
-        # Case E: open_notes (or other command) matched
+        # Case E: open any installed app
+        if match.action_id == "open_app":
+            self._run_open_app(match, tx_result, session_result, rule_match_time_sec, log_text)
+            return
+
+        # Case F: open_notes (or other command) matched
         if self.overlay is not None:
             self.overlay.show_action_start(tx_result.text, "Opening Notes...")
 
@@ -1283,9 +1360,16 @@ class VoiceAssistantApp(rumps.App):
         if act_res.success:
             if self.overlay is not None:
                 self.overlay.show_action_success(tx_result.text, act_res.message)
+        elif act_res.error is None:
+            # Deliberately not run (unknown or ambiguous app name): say why, not "failed"
+            if self.overlay is not None:
+                self.overlay.show_not_run(act_res.message)
         else:
             if self.overlay is not None:
                 self.overlay.show_error(act_res.error or act_res.message)
+        is_notes = match.action_id == "open_notes"
+        exec_label = "`open -a Notes`" if is_notes else "`open <app path>`"
+        done_label = "Notes launched" if is_notes else "app opened"
 
         # Calculate exact latency breakdown
         silence_wait_sec = (
@@ -1313,10 +1397,10 @@ class VoiceAssistantApp(rumps.App):
             f"│ • Silence Wait:   {silence_wait_sec:.3f} s ({'early finish: transcribed during the pause' if session_result.early_finish else 'VAD trailing silence'})\n"
             f"│ • Transcription:  {tx_result.processing_time_sec:.3f} s (MLX Whisper '{getattr(self.transcriber, 'active_model_size', self.config.whisper.model_size)}')\n"
             f"│ • Rule Matching:  {rule_match_time_sec:.4f} s\n"
-            f"│ • Action Exec:    {act_res.execution_time_sec:.4f} s (`open -a Notes`)\n"
+            f"│ • Action Exec:    {act_res.execution_time_sec:.4f} s ({exec_label})\n"
             f"│ ────────────────────────────────────────────────────────\n"
-            f"│ Total (Decision -> Notes launched):   {decision_to_notes_sec:.3f} s\n"
-            f"│ Total (Speech End -> Notes launched): {speech_to_notes_sec:.3f} s\n"
+            f"│ Total (Decision -> {done_label}):   {decision_to_notes_sec:.3f} s\n"
+            f"│ Total (Speech End -> {done_label}): {speech_to_notes_sec:.3f} s\n"
             f"└─────────────────────────────────────────────────────────\n",
             flush=True,
         )
@@ -1334,7 +1418,10 @@ class VoiceAssistantApp(rumps.App):
 
         # Fallback system notification
         try:
-            subtitle = "Command Success" if act_res.success else "Command Failed"
+            subtitle = (
+                "Command Success" if act_res.success
+                else "Nothing opened" if act_res.error is None else "Command Failed"
+            )
             rumps.notification(
                 title="Voice Assistant",
                 subtitle=subtitle,

@@ -86,8 +86,8 @@ make a note,take_note
 can you take notes,take_note
 close notes,none
 quit notes,none
-open safari,none
-launch terminal,none
+open safari,open_app
+launch terminal,open_app
 hello how are you,none
 send message to Alex Test on WhatsApp,none
 please don't open notes,none
@@ -256,3 +256,15 @@ I searched for Alex Test yesterday,none
 searching for Alex Test,none
 search for @alextest,none
 search for Alex Test #1,none
+open Calculator,open_app
+launch System Settings,open_app
+switch to Finder,open_app
+bring up Activity Monitor,open_app
+can you open Google Chrome please,open_app
+open up the Spotify app,open_app
+open Safari and search for flights,none
+open notes and Safari,none
+open it later,none
+open the notes folder in Finder,none
+launch a new note,none
+open WhatsApp then search Alex Test,none

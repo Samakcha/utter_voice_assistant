@@ -218,6 +218,10 @@ class VoiceAssistantOverlay:
             clean_heard = clean_heard[:25] + "..."
         self._show_content(f'Heard: "{clean_heard}" → Nothing recognized', auto_dismiss_sec=2.5)
 
+    def show_not_run(self, message: str) -> None:
+        """A command that was understood but deliberately not run (e.g. unknown app); ~3.5s."""
+        self._show_content(f"🤔 {message}", auto_dismiss_sec=3.5)
+
     def show_error(self, message: str) -> None:
         """Display action failure or error state; auto-fades after ~2.5s."""
         self._show_content(f"⚠️ Action failed: {message}", auto_dismiss_sec=2.5)

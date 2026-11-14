@@ -1,9 +1,9 @@
 """Configuration loader and schema for the Voice Assistant engine."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import tomllib
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -118,6 +118,13 @@ class VocabularyConfig:
 
 
 @dataclass(frozen=True)
+class AppsConfig:
+    """'Open <app>' by voice. aliases maps a spoken name to an installed app's name."""
+    enabled: bool = True
+    aliases: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
     timeouts: TimeoutsConfig
@@ -130,6 +137,7 @@ class AppConfig:
     notes: NotesConfig
     privacy: PrivacyConfig = PrivacyConfig()
     vocabulary: VocabularyConfig = VocabularyConfig()
+    apps: AppsConfig = AppsConfig()
 
 
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
@@ -206,6 +214,16 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         auto_correct=bool(vocab_data.get("auto_correct", True)),
     )
 
+    apps_data = data.get("apps", {})
+    raw_aliases = apps_data.get("aliases", {})
+    apps = AppsConfig(
+        enabled=bool(apps_data.get("enabled", True)),
+        aliases={
+            str(k): str(v) for k, v in (raw_aliases.items() if isinstance(raw_aliases, dict) else [])
+            if str(k).strip() and str(v).strip()
+        },
+    )
+
     return AppConfig(
         hotkeys=HotkeysConfig(
             command_mode=data["hotkeys"]["command_mode"],
@@ -246,4 +264,5 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         notes=notes,
         privacy=privacy,
         vocabulary=vocabulary,
+        apps=apps,
     )

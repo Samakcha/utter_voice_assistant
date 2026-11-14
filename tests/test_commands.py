@@ -108,8 +108,6 @@ NEGATIVE_PHRASES = [
     "read my notes",
     "close notes",
     "quit notes",
-    "open safari",
-    "launch terminal",
     "hello how are you",
     "send message to Alex Test on WhatsApp",
     "please don't open notes",

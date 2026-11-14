@@ -6,6 +6,7 @@ Pure engine component with NO UI code.
 from dataclasses import dataclass
 from enum import Enum
 import logging
+from pathlib import Path
 import subprocess
 import threading
 import time
@@ -183,3 +184,52 @@ def execute_action_async(
     )
     thread.start()
     return thread
+
+
+def launch_app(app_path: Path, app_name: str, timeout_sec: float = 5.0) -> ActionResult:
+    """
+    Open (or bring to the front) an installed app by its .app path, found by engine/apps.py.
+    Runs `open <path>` with an argument list (no shell), and only for a real .app folder.
+    """
+    t0 = time.perf_counter()
+    path = Path(app_path)
+    if path.suffix != ".app" or not path.is_dir():
+        return ActionResult(
+            success=False,
+            action_id="open_app",
+            message=f"Could not open {app_name}",
+            error=f"Not an app on disk: {path}",
+        )
+    try:
+        proc = subprocess.run(
+            ["open", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+        )
+        elapsed = time.perf_counter() - t0
+        if proc.returncode == 0:
+            logger.info("Opened app '%s' in %.3fs.", app_name, elapsed)
+            return ActionResult(
+                success=True, action_id="open_app", message=f"Opening {app_name}",
+                execution_time_sec=elapsed,
+            )
+        stderr_msg = proc.stderr.strip() or f"Process exited with code {proc.returncode}"
+        logger.error("Failed to open app '%s': %s", app_name, stderr_msg)
+        return ActionResult(
+            success=False, action_id="open_app", message=f"Could not open {app_name}",
+            error=stderr_msg, execution_time_sec=elapsed,
+        )
+    except subprocess.TimeoutExpired:
+        return ActionResult(
+            success=False, action_id="open_app", message=f"Timed out opening {app_name}",
+            error=f"Execution exceeded {timeout_sec}s timeout",
+            execution_time_sec=time.perf_counter() - t0,
+        )
+    except Exception as e:
+        logger.error("Error opening app '%s': %s", app_name, e, exc_info=True)
+        return ActionResult(
+            success=False, action_id="open_app", message=f"Error opening {app_name}",
+            error=str(e), execution_time_sec=time.perf_counter() - t0,
+        )

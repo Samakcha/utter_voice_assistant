@@ -21,6 +21,16 @@ c19,command,take a note about the groceries,none,
 c20,command,open a note,none,
 c21,command,I need to open my notes later today,none,
 c22,command,what time is it,none,
+c23,command,open Safari,open_app,Safari
+c24,command,launch Calculator,open_app,Calculator
+c25,command,open System Settings,open_app,System Settings
+c26,command,open settings,open_app,System Settings
+c27,command,open FaceTime,open_app,FaceTime
+c28,command,bring up Activity Monitor,open_app,Activity Monitor
+c29,command,switch to Finder,open_app,Finder
+c30,command,can you open the Calendar app please,open_app,Calendar
+c31,command,open the door,none,
+c32,command,open Safari and search for flights,none,
 s01,short,I'm leaving the house now and will be there soon.,,
 s02,short,Can you send me the notes from yesterday's meeting?,,
 s03,short,Let's catch up over coffee later this week.,,

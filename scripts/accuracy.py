@@ -411,15 +411,30 @@ class ScoredItem:
     term_ok_without_list: Optional[bool] = None
 
 
-def command_correct(heard: str, expected_action: str, expected_name: str) -> bool:
-    """Would the app have done the right thing? 'none' means it should do nothing."""
+def command_correct(heard: str, expected_action: str, expected_name: str, apps=None) -> bool:
+    """
+    Would the app have done the right thing? 'none' means it should do nothing.
+    For "open <app>", `apps` (an engine.apps.AppInventory) decides which installed app the
+    name opens, exactly like the app does; an unknown or ambiguous name opens nothing.
+    """
+    from engine.apps import clean_spoken_app_name
+
     match = match_command(heard)
+    name = match.extracted_name if match else None
+    if match is not None and match.action_id == "open_app" and apps is not None:
+        resolved = apps.resolve(name or "")
+        if not resolved.found:
+            match = None  # the app would open nothing
+        else:
+            name = resolved.app.name
     if expected_action == "none":
         return match is None
     if match is None or match.action_id != expected_action:
         return False
     if expected_name:
-        return (match.extracted_name or "").casefold() == expected_name.casefold()
+        if match.action_id == "open_app" and apps is None:
+            name = clean_spoken_app_name(name or "")
+        return (name or "").casefold() == expected_name.casefold()
     return True
 
 
@@ -431,8 +446,9 @@ class AppPipeline:
     """The same transcription steps the app applies, around any transcribe(audio, prompt) function."""
 
     def __init__(self, transcribe: Callable[[Path, Optional[str]], str], terms: Sequence[str],
-                 base_prompt: str = "", max_terms: int = 50, auto_correct: bool = True):
+                 base_prompt: str = "", max_terms: int = 50, auto_correct: bool = True, apps=None):
         self.transcribe = transcribe
+        self.apps = apps  # installed-app list for "open <app>" commands (None: names compared as said)
         self.terms = list(terms)
         self.base_prompt = base_prompt
         self.max_terms = max_terms
@@ -467,7 +483,8 @@ def score_recordings(folder: Path, pipeline: AppPipeline, compare: bool = True,
             heard = pipeline.command(path)
             results.append(ScoredItem(
                 row=row, heard=heard, errors=word_errors(expected, heard), words=words,
-                command_ok=command_correct(heard, row.get("expected_action", ""), row.get("expected_name", "")),
+                command_ok=command_correct(heard, row.get("expected_action", ""), row.get("expected_name", ""),
+                                           apps=pipeline.apps),
             ))
             continue
         heard = pipeline.dictation(path, use_word_list=True)
@@ -612,6 +629,7 @@ def write_item_csv(path: Path, results: Sequence[ScoredItem]) -> None:
 
 def run_score(folder: Path, compare: bool = True, model: Optional[str] = None) -> int:
     from engine.config import load_config
+    from engine.apps import AppInventory
     from engine.transcriber import MLXWhisperTranscriber
     from engine.vocabulary import VocabularyStore
     import dataclasses
@@ -636,6 +654,7 @@ def run_score(folder: Path, compare: bool = True, model: Optional[str] = None) -
             base_prompt=config.whisper.initial_prompt,
             max_terms=config.vocabulary.max_prompt_terms,
             auto_correct=config.vocabulary.auto_correct,
+            apps=AppInventory(aliases=config.apps.aliases) if config.apps.enabled else None,
         )
 
         def _progress(i, n):

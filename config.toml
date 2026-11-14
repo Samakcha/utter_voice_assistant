@@ -173,3 +173,16 @@ max_prompt_terms = 50
 # Fix close mishearings of listed words after transcription. Strict: ordinary English
 # words are never changed, only near-misses of your listed names and terms.
 auto_correct = true
+
+[apps]
+# "Open <app>" by voice in command mode (Control + Option + M): "open Safari",
+# "launch Calculator", "switch to Finder". Works for any app in the Applications folders.
+# Unknown names, and names that could mean two apps, open nothing and say why.
+# Notes and WhatsApp keep their own commands.
+enabled = true
+
+[apps.aliases]
+# Your own spoken names for apps: "what you say" = "the app's name as Finder shows it".
+# Useful when Whisper hears a name differently. Examples (remove the # to use):
+# cloud = "Claude"
+# browser = "Safari"
