@@ -186,3 +186,17 @@ enabled = true
 # Useful when Whisper hears a name differently. Examples (remove the # to use):
 # cloud = "Claude"
 # browser = "Safari"
+
+[cleanup]
+# Tidies dictation (Control + Option + D) and notes before they are pasted or saved.
+# Rules only, nothing leaves the Mac. When a rule is not sure, the text stays as spoken.
+enabled = true
+# Remove sounds like "um", "uh", "er", "hmm" ("like" and "you know" are kept).
+fillers = true
+# "the the report" -> "the report", "can you can you" -> "can you".
+# Doubles said on purpose stay: "very very good", "no no no", "bye bye", "that that".
+repeats = true
+# Clear self-corrections: "Monday, no wait, Tuesday" -> "Tuesday", "at 6, I mean 7" -> "at 7",
+# "the red one, I mean the blue one" -> "the blue one", and "scratch that" removes the
+# sentence before it.
+corrections = true

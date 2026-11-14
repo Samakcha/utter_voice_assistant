@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Working title:** TBD
-**Status:** v0.3.8 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12).
+**Status:** v0.3.9 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13).
 **Last updated:** 14 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -112,6 +112,7 @@ The whole normalized utterance must match a command's grammar: lowercase, punctu
 6. The session ends on: a **stop phrase**, the dictation hotkey pressed again, letting go after a hold, **8 s of silence**, or Esc (cancel, paste nothing).
 7. The LLM is never involved in dictation.
 8. The **personal word list** (6.11) is hinted to Whisper for every chunk, and close mishearings of listed names are fixed in the final text before pasting.
+9. **Cleanup** (6.13) tidies the final text first: fillers, accidental repeats and clear self-corrections.
 
 ### 6.5 Stop phrases
 - Defaults: `"stop dictation"`, `"end dictation"` (dictation); the note session also accepts `"stop note"`. The earlier default "end note" was dropped (too common a phrase).
@@ -134,7 +135,7 @@ The whole normalized utterance must match a command's grammar: lowercase, punctu
 
 ### 6.8 Voice notes (`take_note`)
 1. In command mode say "start taking notes". The command session fully ends first (microphone closed), then a **note session** starts from the main thread.
-2. The note session reuses the dictation machinery (chunking, stop phrases, chunk joiner, session ids, personal word list).
+2. The note session reuses the dictation machinery (chunking, stop phrases, chunk joiner, session ids, cleanup, personal word list).
 3. It ends on a stop phrase ("stop note"), either hotkey, the **10 s** silence timeout, or Esc (creates nothing).
 4. At the end, **one new note** is created in Apple Notes with a title line (default `Voice note {date} {time}`) and the full text.
 5. **Saving:** `osascript` (AppleScript) with the text passed as **arguments** (never spliced into script source, so quotes, backslashes and injection attempts are inert). The body is HTML-escaped (`&`, `<`, `>`), newlines become `<br>`, and Hindi/emoji text is preserved. Runs on a worker thread with a 15 s timeout. Notes is not brought to the front unless `reveal_after_save = true`.
@@ -193,7 +194,21 @@ Milestone 1. "Open Safari", "launch Calculator", "switch to Finder": any app on 
 4. **Refusals:** an unknown name opens nothing and the overlay says `No app called "door"`; a name matching two or more apps at the same level opens nothing and lists them ("Which app: Google Chrome or Google Drive? Say the full name."). These show as "Nothing opened", not as a failure.
 5. **Launch:** `open <path of the .app>` with an argument list (no shell), only for a real `.app` folder found by the scan.
 6. **Settings** (`[apps]`): `enabled = true`; `[apps.aliases]` maps what you say to an app's Finder name, for names Whisper hears differently (for example `cloud = "Claude"`).
-7. **Checked:** 74 automated tests; every app sentence in the accuracy set resolves correctly against this Mac's 82 apps; 16 phrases spoken by the Mac's synthetic voice and transcribed by turbo all did the right thing (14 opened the right app, "open the door" and "open Safari and search for flights" opened nothing). Not yet tested live by the user.
+7. **Checked:** 74 automated tests; every app sentence in the accuracy set resolves correctly against this Mac's 82 apps; 16 phrases spoken by the Mac's synthetic voice and transcribed by turbo all did the right thing (14 opened the right app, "open the door" and "open Safari and search for flights" opened nothing). **User's voice (14 November 2026):** the 10 app commands scored 10 of 10 (32 of 32 commands overall, MacBook Air microphone), and the live test in the running assistant opened every app correctly.
+
+### 6.13 Dictation cleanup (`engine/cleanup.py`)
+Milestone 2. The text you meant, not every sound you made. Rules only: offline, no model, well under a millisecond. Applied to dictation and notes after the stop phrase is removed and before the word list (6.11); never to commands. **When a rule is not sure, the text stays as spoken.**
+
+1. **Fillers:** sounds only ("um", "uh", "er", "erm", "ah", "hmm", "mm", in any length such as "umm"). Real words are never removed: "like", "you know", "so", "well", "hum", and names such as "Umar" or "Ahmed". Capitalised codes ("ERR 404") are kept. Commas around a filler go with it ("We need, uh, three" → "We need three"); a sentence that was only "Um." disappears.
+2. **Accidental repeats** of one to three words, also with a comma between ("the the", "I, I", "can you, can you"). Kept on purpose: doubles people say deliberately or that are correct grammar ("very very", "no no no", "bye bye", "ha ha", "hello hello", "that that", "had had", "is is"), numbers ("5 5 7 2"), and repeats across a full stop ("Go. Go.").
+3. **Self-corrections**, only after a clear phrase: "no wait", "wait no", "no sorry", "sorry I mean", "I mean", "actually no", "or rather", and plain "no" only between two numbers or two days ("three, no, four"). The phrase must be set off by a pause (a comma or full stop around it). What is replaced:
+   - a number, time, price, day or month by the next one of the same kind ("Monday. No wait. Tuesday." → "Tuesday"; "at 6 tonight, I mean 7" → "at 7 tonight");
+   - or a short phrase that restarts from the same small word ("the red one, I mean the blue one" → "the blue one"; at most 4 new words, never across a full sentence).
+   - Left alone: "I mean it", "It's okay. I mean, it's not bad.", "there was no wait at the desk", "I'm sorry, Tuesday doesn't work", "I have 2 kids. I mean 2 is enough."
+4. **"Scratch that" / "strike that"** on its own (followed by a pause or the end) removes the sentence before it ("Call him tomorrow. Scratch that. Email him." → "Email him."). "Scratch that itch" is a normal sentence and is kept.
+5. **Settings** (`[cleanup]`): `enabled`, and `fillers`, `repeats`, `corrections` to switch each rule off. With `redact_names_in_logs = true` the log only counts changes ("Cleanup: 1 filler, 1 correction."); otherwise it shows them.
+6. **Checked:** 100 new automated tests (each rule, everything that must stay unchanged, chunked dictation, notes, the log). On the user's 65 recorded dictation sentences cleanup changed **nothing** (score 99.1% with and without). 12 cluttered sentences spoken by the Mac's synthetic voice: 9 came out clean; the misses were "scratch that" said without a pause (Whisper wrote no punctuation, so it is left alone) and "hmm" heard as the word "Hum". The recorder has 13 cleanup sentences (e01 to e13) for the user's voice. Not yet tested live by the user.
+7. **Not included:** spoken punctuation ("comma", "new line"); offered to the user and not chosen.
 
 ## 7. Technical Approach
 
@@ -215,7 +230,7 @@ Milestone 1. "Open Safari", "launch Calculator", "switch to Finder": any app on 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 657 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 757 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -244,12 +259,12 @@ voice-assistant/
   main.py                      entry point (startup is a function, so tests can run it)
   config.toml                  all tunable values, every key commented
   engine/                      audio_capture, vad, session, transcriber, audio_utils, commands,
-                               actions, apps, stop_phrases, chunk_joiner, insertion, notes_writer, vocabulary,
+                               actions, apps, stop_phrases, chunk_joiner, cleanup, insertion, notes_writer, vocabulary,
                                config, models
   interface/                   app, hotkeys, key_events, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, eval_rules, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       657 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       757 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
 
 ~/Library/Application Support/VoiceAssistant/
@@ -271,6 +286,8 @@ voice-assistant/
 | `[storage]` | `recordings_dir = "~/Library/Application Support/VoiceAssistant/recordings"`, `max_recordings_kept = 20`, `note_backups_dir = "~/Library/Application Support/VoiceAssistant/note_backups"` |
 | `[privacy]` | `redact_names_in_logs = true`, `keep_whatsapp_audio = false`, `keep_audio_when_whatsapp_front = false`, `keep_recordings = false` |
 | `[vocabulary]` | `enabled = true`, `file = "~/Library/Application Support/VoiceAssistant/vocabulary.txt"`, `max_prompt_terms = 50`, `auto_correct = true` |
+| `[apps]` | `enabled = true`; `[apps.aliases]` spoken name = app name |
+| `[cleanup]` | `enabled = true`, `fillers = true`, `repeats = true`, `corrections = true` |
 
 ## 9. Measured behavior (from manual testing)
 
@@ -288,7 +305,7 @@ voice-assistant/
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 657 passing |
+| Automated tests | 757 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -300,8 +317,8 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 - **Working agreement with the coding agent:** plan first and wait for approval; never report a pass for anything it could not actually run; never drive or inspect the user's WhatsApp from its own shell.
 
 ### 10.1 Accuracy score on the user's own voice (`scripts/accuracy.py`)
-- **Record** (`uv run python scripts/accuracy.py record`): shows one sentence at a time and saves the audio together with the exact sentence, so no transcripts are typed by hand. 78 fixed sentences in five groups (22 commands including 4 that must do nothing, 26 short and 14 long dictation sentences, 6 with numbers, 10 with tech words) plus one sentence per word-list term (up to 12). v0.3.8 adds 10 app commands (c23 to c32: 8 apps that ship with macOS, plus "open the door" and "open Safari and search for flights", which must open nothing); app commands are scored by which installed app would open. About 20 minutes; skip, redo and quit at any point, and it resumes by sentence text. Takes that are under 0.6 s or quieter than −45 dBFS prompt a redo. The microphone opens only while recording and is always closed on quit or Ctrl+C.
-- **Score** (`uv run python scripts/accuracy.py score`): runs every recording through the app's own steps (the configured local model, normalization and silence guard; the word-list hint, echo strip and correction for dictation; no word list and the command rules for commands). Reports % of words right (word-weighted) per group, how many commands would have done the right thing (right action, right name, or nothing), how many word-list terms were spelled exactly, and the same dictation scored without the word list. It also lists the worst mistakes. Offline only.
+- **Record** (`uv run python scripts/accuracy.py record`): shows one sentence at a time and saves the audio together with the exact sentence, so no transcripts are typed by hand. 78 fixed sentences in five groups (22 commands including 4 that must do nothing, 26 short and 14 long dictation sentences, 6 with numbers, 10 with tech words) plus one sentence per word-list term (up to 12). v0.3.8 adds 10 app commands (c23 to c32: 8 apps that ship with macOS, plus "open the door" and "open Safari and search for flights", which must open nothing); app commands are scored by which installed app would open. v0.3.9 adds 13 cleanup sentences (e01 to e13), said with "um"s, repeats and corrections on purpose; each has the tidy text it should become, and they are scored on their own so they never lower the dictation score. About 20 minutes; skip, redo and quit at any point, and it resumes by sentence text. Takes that are under 0.6 s or quieter than −45 dBFS prompt a redo. The microphone opens only while recording and is always closed on quit or Ctrl+C.
+- **Score** (`uv run python scripts/accuracy.py score`): runs every recording through the app's own steps (the configured local model, normalization and silence guard; the word-list hint, echo strip and correction for dictation; no word list and the command rules for commands). Reports % of words right (word-weighted) per group, how many commands would have done the right thing (right action, right name, or nothing), how many word-list terms were spelled exactly, and the same dictation scored without the word list and without cleanup (with how many normal sentences cleanup changed), plus how many cleanup sentences came out exactly right with and without cleanup. It also lists the worst mistakes. Offline only.
 - **What is not an error:** both sentences are rewritten into one standard form before words are compared: punctuation and capitals dropped, contractions expanded ("I'm" = "I am", "can't" = "cannot"; "it's" = "it is" and "I'd" = "I would" after common pronouns only), joined and split spellings unified ("every day" = "everyday", "OK" = "okay"), hyphens read as spaces, number words as digits ("two" = "2", "twenty five" = "25"), and "p.m." = "pm". Real mishearings still count ("notes" / "nodes", "its" / "it's").
 - **Storage:** recordings, the manifest and the reports go to `~/Library/Application Support/VoiceAssistant/accuracy/`, never the project folder; deleting that folder removes everything.
 - **Limits:** long sentences are scored whole, while the app splits dictation at pauses; ordinals ("15th" vs "fifteenth") and accents ("MADRÉ" vs "Madre") still count as errors; the score is for the microphone used while recording.
@@ -362,22 +379,22 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 2. **LLM fallback** for flexible phrasing (original Step 4), benchmarked against the rules, off by default.
 3. **Native Swift interface** (packaging, settings and onboarding are Milestone 3).
 4. **Read-back of notes, sending a message by voice** (would need a confirmation overlay with Enter/Esc, and is high risk).
-5. **Model options** for lower-memory Macs, optional cloud models. (Dictation cleanup is Milestone 2.)
+5. **Model options** for lower-memory Macs, optional cloud models. (Rule-based dictation cleanup is built, 6.13.)
 6. **Choosing between ambiguous apps by voice** ("the first one") instead of saying the full name.
 
 ## 15. Next steps: three milestones
 
 Agreed on 14 November 2026. Each milestone is built on its own branch, measured where possible, and tested by hand by the user before the next one starts.
 
-### Milestone 1: More commands (open any app by voice) — built in v0.3.8, waiting for the user's live test
+### Milestone 1: More commands (open any app by voice) — done (v0.3.8, tested live by the user on 14 November 2026)
 - "Open Safari", "launch Calculator", "switch to Finder": any app installed on the Mac, with no list to maintain (6.12).
 - Safe by design: unknown names and names that could mean two apps do nothing and say why; Notes and WhatsApp commands keep priority; apps launch only from a path found on disk.
 - Accuracy sentences for app commands added to the recorder, so the result can be scored on the user's voice.
 - Optional, small: WhatsApp search names from the word list (decision pending, see 12.1).
 
-### Milestone 2: Nicer dictation (cleanup)
-- Remove filler words ("um", "uh"), accidental repeats ("the the") and simple self-corrections, with rules only (offline, no LLM).
-- Measured before and after on the user's recorded sentences; nothing ships that lowers the score.
+### Milestone 2: Nicer dictation (cleanup) — built in v0.3.9, waiting for the user's recordings and live test
+- Remove filler words ("um", "uh"), accidental repeats ("the the") and simple self-corrections, with rules only (offline, no LLM) (6.13).
+- Measured before and after on the user's recorded sentences; nothing ships that lowers the score. Result so far: no change on the 65 normal dictation sentences; 13 cleanup sentences to record.
 
 ### Milestone 3: A real Mac app (v1.0)
 - A double-clickable app with an icon that starts at login, instead of `uv run` in a terminal.
@@ -410,4 +427,5 @@ Agreed on 14 November 2026. Each milestone is built on its own branch, measured 
 - Privacy by design: no session audio written to disk by default, personal data in `~/Library/Application Support/VoiceAssistant/`, names redacted at the source, audio deleted early for WhatsApp, fake names in all tests.
 - Personal word list for dictation and notes: hinted to Whisper, strict post-correction, stored with personal data, never used for commands.
 - Open any installed app by voice (Milestone 1): strict matching levels, refusal on unknown or ambiguous names, launch by path only, Notes and WhatsApp keep priority.
+- Dictation cleanup (Milestone 2): rules only, dictation and notes only, narrow rules that leave the text as spoken when unsure; each rule can be switched off.
 - WhatsApp Nth-chat and the LLM fallback are parked.

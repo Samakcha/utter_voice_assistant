@@ -90,3 +90,23 @@ def test_word_list_can_be_turned_off(tmp_path):
 
     config = load_config(path)
     assert config.vocabulary.file is None
+
+
+def test_cleanup_is_on_by_default_and_each_rule_can_be_switched_off(tmp_path):
+    from engine.config import CleanupConfig
+    config = load_config()
+    assert config.cleanup == CleanupConfig(enabled=True, fillers=True, repeats=True, corrections=True)
+
+    source = (Path(__file__).resolve().parent.parent / "config.toml").read_text(encoding="utf-8")
+    assert "\n[cleanup]\n" in source
+    head, tail = source.split("\n[cleanup]\n", 1)
+    tail = tail.replace("enabled = true", "enabled = false", 1).replace("repeats = true", "repeats = false", 1)
+    path = tmp_path / "config.toml"
+    path.write_text(head + "\n[cleanup]\n" + tail, encoding="utf-8")
+    config = load_config(path)
+    assert config.cleanup.enabled is False and config.cleanup.repeats is False
+    assert config.cleanup.fillers is True and config.cleanup.corrections is True
+
+    without = tmp_path / "old.toml"
+    without.write_text(head, encoding="utf-8")  # an older config.toml with no [cleanup]
+    assert load_config(without).cleanup == CleanupConfig()

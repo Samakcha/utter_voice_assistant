@@ -14,6 +14,7 @@ import rumps
 from engine.actions import ActionResult, execute_action_async, launch_app
 from engine.apps import STATUS_AMBIGUOUS, AppInventory
 from engine.chunk_joiner import join_transcription_chunks
+from engine.cleanup import clean_dictation
 from engine.commands import CommandMatch, allows_early_finish, match_command
 from engine.config import AppConfig
 from engine.insertion import format_dictation_insertion
@@ -588,6 +589,33 @@ class VoiceAssistantApp(rumps.App):
         terms = self.vocabulary.terms()
         return strip_prompt_echo(text, terms) if terms else text
 
+    def _apply_cleanup(self, text: str, label: str) -> str:
+        """Remove "um"s, accidental repeats and clear self-corrections from the final text."""
+        cfg = self.config.cleanup
+        if not cfg.enabled or not text:
+            return text
+        result = clean_dictation(
+            text, fillers=cfg.fillers, repeats=cfg.repeats, corrections=cfg.corrections
+        )
+        if result.changed:
+            counts = {}
+            for change in result.changes:
+                counts[change.kind] = counts.get(change.kind, 0) + 1
+            summary = ", ".join(f"{n} {kind}" + ("" if n == 1 else "s") for kind, n in counts.items())
+            if self.config.privacy.redact_names_in_logs:
+                logger.info("[%s] Cleanup: %s.", label, summary)
+            else:
+                logger.info(
+                    "[%s] Cleanup: %s: %s",
+                    label,
+                    summary,
+                    "; ".join(
+                        f"'{c.removed}'" + (f" -> '{c.replacement}'" if c.replacement else "")
+                        for c in result.changes
+                    ),
+                )
+        return result.text
+
     def _apply_word_list(self, text: str, label: str) -> str:
         """Fix close mishearings of listed terms in the final dictation or note text."""
         if not self.config.vocabulary.auto_correct or not text:
@@ -849,6 +877,7 @@ class VoiceAssistantApp(rumps.App):
             matched_phrase_str = "None"
             end_reason_str = session_result.end_reason.value if session_result else "unknown"
 
+        final_text = self._apply_cleanup(final_text, "Dictation")
         final_text = self._apply_word_list(final_text, "Dictation")
 
         formatted = format_dictation_insertion(
@@ -951,6 +980,7 @@ class VoiceAssistantApp(rumps.App):
             matched_phrase_str = "None"
             end_reason_str = session_result.end_reason.value if session_result else "unknown"
 
+        final_text = self._apply_cleanup(final_text, "Note")
         final_text = self._apply_word_list(final_text, "Note")
 
         if not final_text.strip():

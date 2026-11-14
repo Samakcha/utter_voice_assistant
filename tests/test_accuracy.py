@@ -22,7 +22,7 @@ def test_prompt_file_is_well_formed():
     items = acc.load_prompts()
     ids = [i.id for i in items]
     assert len(ids) == len(set(ids)), "ids must be unique"
-    assert 70 <= len(items) <= 100
+    assert 70 <= len(items) <= 120
     assert {i.category for i in items} <= set(acc.CATEGORY_LABELS)
     for i in items:
         assert i.text and i.text == i.text.strip()
@@ -30,6 +30,63 @@ def test_prompt_file_is_well_formed():
             assert i.expected_action, i.id
         else:
             assert not i.expected_action, i.id
+        assert bool(i.expected_text) == (i.category == "cleanup"), i.id
+
+
+def test_cleanup_sentences_agree_with_the_rules():
+    """Heard exactly as written, every cleanup sentence must come out as the list expects."""
+    from engine.cleanup import clean_dictation
+    items = [i for i in acc.load_prompts() if i.category == "cleanup"]
+    assert len(items) >= 10
+    for item in items:
+        heard = item.text[:1].upper() + item.text[1:] + ("" if item.text.endswith(".") else ".")
+        cleaned = clean_dictation(heard).text
+        assert acc.word_errors(item.expected_text, cleaned) == 0, (item.id, cleaned)
+
+
+def test_cleanup_sentences_are_scored_on_the_tidy_text_and_kept_apart(tmp_path):
+    from engine.config import CleanupConfig
+    items = [
+        acc.Item("s01", "short", "We need more milk."),
+        acc.Item("e01", "cleanup", "um, I think we should leave at five",
+                 expected_text="I think we should leave at five"),
+        acc.Item("e06", "cleanup", "send it on Monday, no wait, Tuesday", expected_text="send it on Tuesday"),
+    ]
+    folder = build_folder(tmp_path, items)
+    heard = {
+        "s01": "We need more milk.",
+        "e01": "Um, I think we should leave at 5.",
+        "e06": "Send it on Monday. No, Tuesday.",  # "no" alone is not a correction phrase
+    }
+    pipeline = acc.AppPipeline(lambda p, _prompt: heard[p.name.split("-")[0]], terms=[],
+                               cleanup=CleanupConfig())
+    results = {r.row["id"]: r for r in acc.score_recordings(folder, pipeline)}
+
+    assert results["e01"].heard == "I think we should leave at 5."
+    assert results["e01"].errors == 0 and results["e01"].errors_before_cleanup == 1
+    assert results["e06"].errors > 0
+
+    summary = acc.summarize(list(results.values()))
+    assert summary["_dictation"]["count"] == 1  # cluttered sentences don't lower the dictation score
+    assert summary["_dictation"]["changed_by_cleanup"] == 0
+    assert summary["cleanup"]["clean_after"] == 1 and summary["cleanup"]["clean_before"] == 0
+
+    report = acc.format_report(list(results.values()), summary, model="test-model")
+    assert "CLEANUP:   1 of 2 sentences" in report
+    assert "without cleanup: 100.0% (cleanup changed 0 sentences)" in report
+    assert "want:  send it on Tuesday" in report
+
+    manifest = {r["id"]: r for r in acc.read_manifest(folder)}
+    assert manifest["e06"]["expected_text"] == "send it on Tuesday"
+
+
+def test_no_cleanup_comparison_when_cleanup_is_off(tmp_path):
+    folder = build_folder(tmp_path, [acc.Item("s01", "short", "Um, hello there.")])
+    pipeline = acc.AppPipeline(lambda p, _prompt: "Um, hello there.", terms=[])
+    results = acc.score_recordings(folder, pipeline)
+    assert results[0].heard == "Um, hello there." and results[0].errors_before_cleanup is None
+    report = acc.format_report(results, acc.summarize(results), model="m")
+    assert "without cleanup" not in report
 
 
 def _builtin_apps():

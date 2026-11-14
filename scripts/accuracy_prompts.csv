@@ -1,4 +1,4 @@
-id,category,text,expected_action,expected_name
+id,category,text,expected_action,expected_name,expected_text
 c01,command,open notes,open_notes,
 c02,command,open the notes app,open_notes,
 c03,command,please open my notes,open_notes,
@@ -87,3 +87,16 @@ t07,tech,Let's schedule a Zoom call for tomorrow afternoon.,,
 t08,tech,Turn on two-factor authentication for your account.,,
 t09,tech,The database backup runs every night.,,
 t10,tech,Send me a screenshot of the error message.,,
+e01,cleanup,"um, I think we should leave at five",,,I think we should leave at five
+e02,cleanup,"so, uh, the meeting is moved to Friday",,,so the meeting is moved to Friday
+e03,cleanup,the the report is ready for review,,,the report is ready for review
+e04,cleanup,I I will call you after lunch,,,I will call you after lunch
+e05,cleanup,"can you, can you send me the file",,,can you send me the file
+e06,cleanup,"send it on Monday, no wait, Tuesday",,,send it on Tuesday
+e07,cleanup,"let's meet at six, I mean seven",,,let's meet at seven
+e08,cleanup,"I'll bring the red one, I mean the blue one",,,I'll bring the blue one
+e09,cleanup,call him tomorrow. Scratch that. Email him tomorrow.,,,email him tomorrow
+e10,cleanup,"we need three, no, four chairs",,,we need four chairs
+e11,cleanup,"hmm, let me think about it, um, until tomorrow",,,let me think about it until tomorrow
+e12,cleanup,the food was very very good,,,the food was very very good
+e13,cleanup,"I mean it, this is really important",,,"I mean it, this is really important"

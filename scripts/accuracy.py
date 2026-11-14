@@ -135,7 +135,7 @@ PROMPTS_FILE = Path(__file__).resolve().parent / "accuracy_prompts.csv"
 DEFAULT_ACCURACY_DIR = DEFAULT_DATA_DIR.expanduser() / "accuracy"
 MANIFEST_NAME = "manifest.csv"
 MANIFEST_FIELDS = [
-    "id", "category", "text", "expected_action", "expected_name",
+    "id", "category", "text", "expected_action", "expected_name", "expected_text",
     "file", "duration_sec", "peak_dbfs", "recorded_at",
 ]
 SAMPLE_RATE = 16000
@@ -160,6 +160,7 @@ CATEGORY_LABELS = {
     "numbers": "Numbers",
     "tech": "Tech words",
     "word_list": "Your word list",
+    "cleanup": "Cleanup",
 }
 
 
@@ -170,6 +171,7 @@ class Item:
     text: str
     expected_action: str = ""
     expected_name: str = ""
+    expected_text: str = ""  # cleanup sentences: what should be pasted (said with "um"s)
 
 
 # ---- Sentence list -------------------------------------------------------------------
@@ -183,6 +185,7 @@ def load_prompts(path: Path = PROMPTS_FILE) -> List[Item]:
                 text=row["text"].strip(),
                 expected_action=(row.get("expected_action") or "").strip(),
                 expected_name=(row.get("expected_name") or "").strip(),
+                expected_text=(row.get("expected_text") or "").strip(),
             )
             for row in csv.DictReader(f)
             if row.get("id", "").strip()
@@ -252,7 +255,7 @@ def record_result(folder: Path, item: Item, audio: np.ndarray, now: Optional[dat
     row = {
         "id": item.id, "category": item.category, "text": item.text,
         "expected_action": item.expected_action, "expected_name": item.expected_name,
-        "file": rel, "duration_sec": f"{len(audio) / SAMPLE_RATE:.2f}",
+        "expected_text": item.expected_text, "file": rel, "duration_sec": f"{len(audio) / SAMPLE_RATE:.2f}",
         "peak_dbfs": f"{peak:.1f}", "recorded_at": now.isoformat(timespec="seconds"),
     }
     rows = [r for r in read_manifest(folder) if _item_key(r["category"], r["text"]) != _item_key(item.category, item.text)]
@@ -336,6 +339,8 @@ def run_record(folder: Path, terms: Sequence[str], input_fn: Callable[[str], str
     print("\nHow it works: press Enter, read the sentence out loud the way you normally")
     print("dictate, then press Enter again. Read it exactly as written; if you stumble,")
     print("redo it. Commands are said as commands. Quit any time with q: progress is saved.")
+    print("Cleanup sentences are the exception: say the um / uh out loud, naturally, and")
+    print("pause briefly where the commas are, as if you were correcting yourself.")
     print("=" * 60)
 
     if not todo:
@@ -354,6 +359,9 @@ def _record_loop(folder, items, todo, done_count, input_fn, recorder) -> int:
         while True:
             print(f"\n[{n}/{len(items)}] {label} - say:")
             print(f"    {item.text}")
+            if item.category == "cleanup":
+                print("    (say the um / uh naturally; should come out as: "
+                      f"\"{item.expected_text}\")")
             choice = input_fn("  Enter = start recording, s = skip, q = quit > ")
             if choice == "q":
                 print(f"\nStopped. {n - 1} of {len(items)} recorded. Run 'record' again to continue.")
@@ -406,6 +414,8 @@ class ScoredItem:
     words: int
     heard_without_list: Optional[str] = None
     errors_without_list: Optional[int] = None
+    heard_before_cleanup: Optional[str] = None
+    errors_before_cleanup: Optional[int] = None
     command_ok: Optional[bool] = None
     term_ok: Optional[bool] = None
     term_ok_without_list: Optional[bool] = None
@@ -446,8 +456,10 @@ class AppPipeline:
     """The same transcription steps the app applies, around any transcribe(audio, prompt) function."""
 
     def __init__(self, transcribe: Callable[[Path, Optional[str]], str], terms: Sequence[str],
-                 base_prompt: str = "", max_terms: int = 50, auto_correct: bool = True, apps=None):
+                 base_prompt: str = "", max_terms: int = 50, auto_correct: bool = True, apps=None,
+                 cleanup=None):
         self.transcribe = transcribe
+        self.cleanup = cleanup  # engine.config.CleanupConfig, or None for no cleanup
         self.apps = apps  # installed-app list for "open <app>" commands (None: names compared as said)
         self.terms = list(terms)
         self.base_prompt = base_prompt
@@ -458,15 +470,26 @@ class AppPipeline:
         return self.transcribe(path, None)  # commands never use the word list
 
     def dictation(self, path: Path, use_word_list: bool = True) -> str:
+        return self.dictation_steps(path, use_word_list)[1]
+
+    def dictation_steps(self, path: Path, use_word_list: bool = True):
+        """(text before cleanup, text after cleanup), in the app's order: cleanup, then word list."""
+        from engine.cleanup import clean_dictation
         from engine.vocabulary import build_whisper_prompt, correct_text, strip_prompt_echo
 
         if not use_word_list or not self.terms:
-            return self.transcribe(path, self.base_prompt or None)
-        prompt = build_whisper_prompt(self.terms, base_prompt=self.base_prompt, max_terms=self.max_terms)
-        text = strip_prompt_echo(self.transcribe(path, prompt), self.terms)
-        if self.auto_correct:
-            text = correct_text(text, self.terms).text
-        return text
+            text = self.transcribe(path, self.base_prompt or None)
+            fix = lambda t: t  # noqa: E731
+        else:
+            prompt = build_whisper_prompt(self.terms, base_prompt=self.base_prompt, max_terms=self.max_terms)
+            text = strip_prompt_echo(self.transcribe(path, prompt), self.terms)
+            fix = (lambda t: correct_text(t, self.terms).text) if self.auto_correct else (lambda t: t)  # noqa: E731
+        cfg = self.cleanup
+        if cfg is None or not cfg.enabled:
+            return fix(text), fix(text)
+        cleaned = clean_dictation(text, fillers=cfg.fillers, repeats=cfg.repeats,
+                                  corrections=cfg.corrections).text
+        return fix(text), fix(cleaned)
 
 
 def score_recordings(folder: Path, pipeline: AppPipeline, compare: bool = True,
@@ -477,7 +500,7 @@ def score_recordings(folder: Path, pipeline: AppPipeline, compare: bool = True,
         if progress:
             progress(i, len(rows))
         path = folder / row["file"]
-        expected = row["text"]
+        expected = row.get("expected_text") or row["text"]  # cleanup: the tidy version
         words = len(score_words(expected))
         if row["category"] == "command":
             heard = pipeline.command(path)
@@ -487,8 +510,11 @@ def score_recordings(folder: Path, pipeline: AppPipeline, compare: bool = True,
                                            apps=pipeline.apps),
             ))
             continue
-        heard = pipeline.dictation(path, use_word_list=True)
+        before, heard = pipeline.dictation_steps(path, use_word_list=True)
         item = ScoredItem(row=row, heard=heard, errors=word_errors(expected, heard), words=words)
+        if pipeline.cleanup is not None and pipeline.cleanup.enabled:
+            item.heard_before_cleanup = before
+            item.errors_before_cleanup = word_errors(expected, before)
         if compare and pipeline.terms:
             plain = pipeline.dictation(path, use_word_list=False)
             item.heard_without_list = plain
@@ -529,6 +555,14 @@ def summarize(results: Sequence[ScoredItem]) -> Dict[str, Dict[str, float]]:
             ce = sum(i.errors_without_list for i in compared)
             s["right_without_list"] = _pct_right(ce, cw)
             s["right_with_list_same_items"] = _pct_right(sum(i.errors for i in compared), cw)
+        cleaned = [i for i in items if i.errors_before_cleanup is not None]
+        if cleaned:
+            cw = sum(i.words for i in cleaned)
+            s["errors_before_cleanup"] = sum(i.errors_before_cleanup for i in cleaned)
+            s["right_before_cleanup"] = _pct_right(s["errors_before_cleanup"], cw)
+            s["changed_by_cleanup"] = sum(1 for i in cleaned if i.heard_before_cleanup != i.heard)
+            s["clean_after"] = sum(1 for i in cleaned if i.errors == 0)
+            s["clean_before"] = sum(1 for i in cleaned if i.errors_before_cleanup == 0)
         cmds = [i for i in items if i.command_ok is not None]
         if cmds:
             s["commands_ok"] = sum(1 for i in cmds if i.command_ok)
@@ -544,7 +578,8 @@ def summarize(results: Sequence[ScoredItem]) -> Dict[str, Dict[str, float]]:
 
     for cat in order:
         summary[cat] = _stats(groups[cat])
-    dictation = [r for r in results if r.row["category"] != "command"]
+    # Cleanup sentences are said with "um"s on purpose, so they are scored on their own
+    dictation = [r for r in results if r.row["category"] not in ("command", "cleanup")]
     if dictation:
         summary["_dictation"] = _stats(dictation)
     if results:
@@ -570,10 +605,19 @@ def format_report(results: Sequence[ScoredItem], summary: Dict[str, Dict[str, fl
         if "right_without_list" in dic:
             add(f"           without your word list: {dic['right_without_list']:.1f}% "
                 f"(with it: {dic['right_with_list_same_items']:.1f}% on the same recordings)")
+        if "right_before_cleanup" in dic:
+            changed = int(dic["changed_by_cleanup"])
+            add(f"           without cleanup: {dic['right_before_cleanup']:.1f}% "
+                f"(cleanup changed {_plural(changed, 'sentence')})")
     cmd = summary.get("command")
     if cmd and "commands_total" in cmd:
         add(f"COMMANDS:  {int(cmd['commands_ok'])} of {int(cmd['commands_total'])} would have done the right thing "
             f"({cmd['commands_ok'] / cmd['commands_total'] * 100:.0f}%)")
+    cl = summary.get("cleanup")
+    if cl and "clean_after" in cl:
+        add(f"CLEANUP:   {int(cl['clean_after'])} of {int(cl['count'])} sentences with um / repeats / "
+            f"corrections came out exactly right (without cleanup: {int(cl['clean_before'])}); "
+            f"{_plural(int(cl['errors']), 'error')} left, {int(cl['errors_before_cleanup'])} without cleanup")
     wl = summary.get("word_list")
     if wl and "terms_total" in wl:
         line = f"WORD LIST: {int(wl['terms_ok'])} of {int(wl['terms_total'])} names/terms spelled exactly right"
@@ -612,6 +656,12 @@ def format_report(results: Sequence[ScoredItem], summary: Dict[str, Dict[str, fl
         for r in mistakes:
             add(f"  [{r.row['id']}] {r.errors} error(s)")
             add(f"     said:  {r.row['text']}")
+            if r.row.get("expected_text"):
+                add(f"     want:  {r.row['expected_text']}")
+                if r.heard_before_cleanup is not None and r.heard_before_cleanup != r.heard:
+                    add(f"     heard: {r.heard_before_cleanup}")
+                    add(f"     clean: {r.heard}")
+                    continue
             add(f"     heard: {r.heard}")
     return "\n".join(lines)
 
@@ -620,11 +670,14 @@ def write_item_csv(path: Path, results: Sequence[ScoredItem]) -> None:
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         w.writerow(["id", "category", "said", "heard", "errors", "words", "heard_without_list",
-                    "errors_without_list", "command_ok", "term_ok"])
+                    "errors_without_list", "command_ok", "term_ok", "heard_before_cleanup",
+                    "errors_before_cleanup"])
         for r in results:
             w.writerow([r.row["id"], r.row["category"], r.row["text"], r.heard, r.errors, r.words,
                         r.heard_without_list or "", "" if r.errors_without_list is None else r.errors_without_list,
-                        "" if r.command_ok is None else r.command_ok, "" if r.term_ok is None else r.term_ok])
+                        "" if r.command_ok is None else r.command_ok, "" if r.term_ok is None else r.term_ok,
+                        r.heard_before_cleanup or "",
+                        "" if r.errors_before_cleanup is None else r.errors_before_cleanup])
 
 
 def run_score(folder: Path, compare: bool = True, model: Optional[str] = None) -> int:
@@ -655,6 +708,7 @@ def run_score(folder: Path, compare: bool = True, model: Optional[str] = None) -
             max_terms=config.vocabulary.max_prompt_terms,
             auto_correct=config.vocabulary.auto_correct,
             apps=AppInventory(aliases=config.apps.aliases) if config.apps.enabled else None,
+            cleanup=config.cleanup,
         )
 
         def _progress(i, n):

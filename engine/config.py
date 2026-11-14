@@ -125,6 +125,15 @@ class AppsConfig:
 
 
 @dataclass(frozen=True)
+class CleanupConfig:
+    """Tidy dictation and notes before they are pasted or saved (rules only, offline)."""
+    enabled: bool = True
+    fillers: bool = True  # "um", "uh"
+    repeats: bool = True  # "the the"
+    corrections: bool = True  # "Monday, no wait, Tuesday", "scratch that"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
     timeouts: TimeoutsConfig
@@ -138,6 +147,7 @@ class AppConfig:
     privacy: PrivacyConfig = PrivacyConfig()
     vocabulary: VocabularyConfig = VocabularyConfig()
     apps: AppsConfig = AppsConfig()
+    cleanup: CleanupConfig = CleanupConfig()
 
 
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
@@ -224,6 +234,14 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         },
     )
 
+    cleanup_data = data.get("cleanup", {})
+    cleanup = CleanupConfig(
+        enabled=bool(cleanup_data.get("enabled", True)),
+        fillers=bool(cleanup_data.get("fillers", True)),
+        repeats=bool(cleanup_data.get("repeats", True)),
+        corrections=bool(cleanup_data.get("corrections", True)),
+    )
+
     return AppConfig(
         hotkeys=HotkeysConfig(
             command_mode=data["hotkeys"]["command_mode"],
@@ -265,4 +283,5 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         privacy=privacy,
         vocabulary=vocabulary,
         apps=apps,
+        cleanup=cleanup,
     )
