@@ -48,6 +48,14 @@ DEFAULT_DATA_DIR = Path("~/Library/Application Support/Utter")
 LEGACY_DATA_DIR = Path("~/Library/Application Support/VoiceAssistant")
 DEFAULT_LOG_DIR = Path("~/Library/Logs/Utter")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def running_as_app(project_root: Optional[Path] = None) -> bool:
+    """True inside Utter.app (code in Utter.app/Contents/Resources/app), False from the project folder."""
+    root = project_root or PROJECT_ROOT
+    return root.parent.name == "Resources" and root.parent.parent.name == "Contents"
+
+
 # The settings that ship with Utter. The user's own copy is <data folder>/config.toml.
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.toml"
 USER_CONFIG_NAME = "config.toml"

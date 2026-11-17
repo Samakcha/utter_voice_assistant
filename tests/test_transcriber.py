@@ -10,10 +10,19 @@ from engine.models import TranscriptionResult
 from engine.transcriber import MLXWhisperTranscriber, resolve_local_model, resolve_model_path
 
 
+def _models_dir() -> Path:
+    """Where this Mac keeps the real Whisper weights: the Utter data folder (since v0.3.11),
+    or the project's ./models before the first start moved them (read only, either way)."""
+    from engine.config import DEFAULT_DATA_DIR, PROJECT_ROOT
+    for folder in (DEFAULT_DATA_DIR.expanduser() / "models", PROJECT_ROOT / "models"):
+        if (folder / "whisper-small-mlx").is_dir():
+            return folder
+    return PROJECT_ROOT / "models"
+
+
 @pytest.fixture(scope="module")
 def transcriber():
-    project_root = Path(__file__).resolve().parent.parent
-    models_dir = project_root / "models"
+    models_dir = _models_dir()
     config = WhisperConfig(
         model_size="small",
         language="en",
@@ -27,8 +36,7 @@ def transcriber():
 
 
 def test_resolve_model_path():
-    project_root = Path(__file__).resolve().parent.parent
-    models_dir = project_root / "models"
+    models_dir = _models_dir()
     resolved = resolve_model_path("small", models_dir)
     # Since we downloaded small into models/whisper-small-mlx, it should point to local path
     assert "whisper-small-mlx" in resolved

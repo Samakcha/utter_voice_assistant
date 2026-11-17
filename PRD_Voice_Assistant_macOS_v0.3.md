@@ -1,8 +1,8 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Product name:** Utter (chosen 17 November 2026)
-**Status:** v0.3.11 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14).
-**Last updated:** 17 November 2026
+**Status:** v0.4.0 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15).
+**Last updated:** 18 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
 
@@ -189,6 +189,18 @@ Milestone 3, stage 1: nothing Utter needs lives in the project folder any more, 
 5. **Never blocks start-up:** a step that fails is logged and Utter starts anyway (shipped settings, models found in the old place). The accuracy script runs the same setup first, in case it runs before the app.
 6. **Checked:** 16 new automated tests (rename, both folders present, settings copied once and kept, models moved, never overwritten, interrupted move, failure, log file, startup, menu items). Rehearsed on instant clones of the user's real data folder (147 files) and models: everything carried over, the word list was byte-identical, both models moved, the settings file was created, the move took 0.001 s, and a second start changed nothing.
 
+### 6.15 Utter.app (`scripts/build_app.py`, `packaging/launcher.c`)
+Milestone 3, stage 2: a double-clickable app in Applications instead of `uv run` in a terminal.
+
+1. **Build:** `uv run python scripts/build_app.py` makes `dist/Utter.app` (about 15 s); `--install` also copies it to `/Applications` (refused while Utter runs from there). **Nothing is downloaded:** the app is assembled from the project's code, the standalone Python that uv installed, and the packages in `.venv`, cloned on APFS (instant, no extra disk space until changed).
+2. **Inside the app** (about 1.4 GB): `Contents/MacOS/Utter` (launcher), `Contents/Resources/python` (a private Python 3.12 with the packages; tests, pip, pytest and tkinter left out), `Contents/Resources/app` (main.py, engine, interface, the shipped config.toml, assets), `Utter.icns` (from the 1024 px icon, 16 to 1024 px). Models, settings and personal data are **not** inside: they stay in `~/Library/Application Support/Utter` (6.14).
+3. **Launcher:** a small C program that runs Python inside its own process (embedded), so macOS sees one app called Utter and asks for, and remembers, permissions as "Utter" (not Terminal or Python). Python ignores outside `PYTHON*` settings and user packages, runs in UTF-8 mode (apps get no language setting from macOS), and never writes `.pyc` files into the signed app (they are compiled at build time).
+4. **Info.plist:** bundle id `com.utter.mac` (changing it later makes macOS treat Utter as a new app), menu bar only (`LSUIElement`, no Dock icon), Apple Silicon only, macOS 14+, and the texts macOS shows in the Microphone and Automation prompts (without them macOS stops the app when it asks).
+5. **Signing:** with a free self-signed certificate named **"Utter Developer"** in the login keychain, every build is signed with it, so macOS keeps Utter's permissions across rebuilds; without one the build is signed ad hoc (it runs, but each rebuild needs the permissions granted again). Create it once in Keychain Access → Certificate Assistant → Create a Certificate… (Name: Utter Developer; Identity Type: Self-Signed Root; Certificate Type: Code Signing). No Apple account or payment.
+6. **One Utter at a time:** a lock file in the data folder; a second copy (for example the app while the terminal version runs) shows "Utter is already running" and exits.
+7. **Self-test:** `Utter.app/Contents/MacOS/Utter --self-test file.wav` loads the voice detector and Whisper and transcribes, without menu bar, hotkeys or microphone; it can never hang (a 45 s watchdog prints every thread's stack and exits). `--check` prints the permission report. Both exit straight away when done (Python's exit clean-up once waited on CoreAudio on the first run of a new build).
+8. **Checked:** 10 new automated tests. The built app started from an empty environment (as macOS starts apps), read the user's settings and log file from the Utter folder, found the MacBook microphone, reported its permissions as "Utter.app", and transcribed a spoken sentence with `large-v3-turbo` exactly ("Open Safari and take a note about the meeting tomorrow.", 0.45 s; model ready in 1 to 5 s); 3 fresh builds and 9 runs exited cleanly. Not yet run as the menu bar app or with permissions; that is the user's live test.
+
 ### 6.11 Personal word list
 Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "Supabase") without retraining anything.
 
@@ -248,7 +260,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 794 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 804 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -282,9 +294,11 @@ voice-assistant/
   interface/                   app, menu_icon, hotkeys, key_events, permissions, overlay, clipboard, whatsapp_ax,
                                whatsapp_control
   assets/                      utter-app-icon.png (drawn by scripts/make_app_icon.py)
-  scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, eval_rules, make_app_icon, test_notes_write,
+  packaging/                   launcher.c (Utter.app's main executable; compiled by scripts/build_app.py)
+  dist/                        Utter.app after a build (gitignored)
+  scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       794 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       804 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -333,7 +347,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 794 passing |
+| Automated tests | 804 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -426,9 +440,10 @@ Agreed on 14 November 2026. Each milestone is built on its own branch, measured 
 
 ### Milestone 3: A real Mac app (v1.0) — in progress
 Decisions (17 November 2026): the name is **Utter**; built for the user's own Mac first (a free personal signing certificate keeps permissions across rebuilds; Apple's paid developer account only if it is shared later); a **full** settings window.
-- **Done in v0.3.10, waiting for the user's live test:** the name Utter; icon-only menu bar with ready / command orb / voice bars / dimmed states and no transcribing state; the app icon (6.1).
-- **Stage 1 built in v0.3.11, waiting for the user's live test:** data folder renamed to Utter, settings file and models in it, log file (6.14). The user chose to move (not copy) the models and to rename the data folder.
-- Next stages: (2) first app build in Applications, with its own permissions; (3) first-run permission guide and start at login; (4) the full settings window; (5) final checks (all tests, unchanged accuracy score, live test of the installed app). Running from the terminal keeps working throughout.
+- **Done in v0.3.10 (tested live by the user):** the name Utter; icon-only menu bar with ready / command orb / voice bars / dimmed states and no transcribing state; the app icon (6.1).
+- **Stage 1 done in v0.3.11 (ran on the user's Mac: data folder renamed, settings copied, models moved):** data folder renamed to Utter, settings file and models in it, log file (6.14). The user chose to move (not copy) the models and to rename the data folder.
+- **Stage 2 built in v0.4.0, waiting for the user's live test:** Utter.app, self-contained, signed with a free personal certificate when present (6.15).
+- Next stages: (3) first-run permission guide and start at login; (4) the full settings window; (5) final checks (all tests, unchanged accuracy score, live test of the installed app). Running from the terminal keeps working throughout.
 - Try running the voice detector without PyTorch to shrink the app; ships only if accuracy and tests are unchanged.
 
 ### Ongoing checks

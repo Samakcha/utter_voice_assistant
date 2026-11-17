@@ -239,7 +239,8 @@ class AppleScriptNotesWriter(BaseNotesWriter):
         if "-1743" in stderr_text:
             return (
                 "Automation permission denied. Please enable permission for Utter "
-                "in System Settings > Privacy & Security > Automation (under your Terminal or Python app)."
+                "in System Settings > Privacy & Security > Automation (under Utter, or under your Terminal "
+                "when Utter runs from the terminal)."
             )
         if "-1728" in stderr_text or "Can’t get application" in stderr_text:
             return "macOS Notes app is not installed or not accessible."

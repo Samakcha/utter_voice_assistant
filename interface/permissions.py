@@ -129,7 +129,9 @@ def format_permissions_report(permissions: Optional[Dict[str, PermissionItem]] =
     lines.append("=" * 70)
     lines.append("⚠️  MISSING macOS PERMISSIONS DETECTED")
     lines.append("=" * 70)
-    lines.append(f"Running on: Python ({sys.executable})")
+    from engine.config import running_as_app
+    as_app = running_as_app()
+    lines.append("Running as: Utter.app" if as_app else f"Running on: Python ({sys.executable})")
     lines.append("Please enable the following permissions so Utter can work:")
     lines.append("")
 
@@ -140,8 +142,12 @@ def format_permissions_report(permissions: Optional[Dict[str, PermissionItem]] =
         lines.append(f"    Direct URL: open '{item.deep_link_url}'")
         lines.append("")
 
-    lines.append("Note: If running from Terminal, iTerm2, or VS Code, you may need to grant")
-    lines.append("      permission to that specific terminal application or to the Python binary.")
+    if as_app:
+        lines.append("Note: turn each one on for \"Utter\" in System Settings. If Utter is listed")
+        lines.append("      but switched on and still not working, remove it with - and add it again.")
+    else:
+        lines.append("Note: If running from Terminal, iTerm2, or VS Code, you may need to grant")
+        lines.append("      permission to that specific terminal application or to the Python binary.")
     lines.append("=" * 70)
 
     return "\n".join(lines)

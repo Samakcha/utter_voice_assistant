@@ -3,6 +3,7 @@ Utter (macOS Apple Silicon) - Step 2 Entry Point
 Runs local menu bar app with global hotkeys, Silero VAD, and MLX Whisper transcription.
 """
 
+import fcntl
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -54,6 +55,50 @@ def setup_file_logging(log_dir: Path) -> Optional[Path]:
     return path
 
 
+_exit_code = 0  # for the command-line modes (--check, --self-test)
+LOCK_FILE_NAME = ".utter.lock"
+_instance_lock = None  # kept open for the whole run; the OS releases it when Utter exits
+
+
+def acquire_single_instance_lock(data_dir: Path):
+    """Only one Utter at a time (the app and the terminal version would both grab the hotkeys)."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(data_dir / LOCK_FILE_NAME, "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def self_test(config, wav_paths) -> bool:
+    """`Utter --self-test [file.wav ...]`: load the voice detector and Whisper and transcribe,
+    without the menu bar, hotkeys or microphone (checks a built Utter.app works)."""
+    import faulthandler
+    import time
+    from engine.vad import SileroVAD
+    # Never hang: after 45 s, print every thread's stack and exit (a broken build shows where)
+    faulthandler.dump_traceback_later(45, exit=True)
+    ok = True
+    t0 = time.perf_counter()
+    SileroVAD(sample_rate=config.audio.sample_rate, threshold=config.vad.speech_threshold)
+    print(f"[self-test] voice detector loaded in {time.perf_counter() - t0:.2f}s", flush=True)
+    t0 = time.perf_counter()
+    transcriber = MLXWhisperTranscriber(config=config.whisper, normalization_config=config.normalization)
+    ready = transcriber.wait_until_ready(timeout=120.0)
+    print(f"[self-test] Whisper '{getattr(transcriber, 'active_model_size', '?')}' ready={ready} "
+          f"in {time.perf_counter() - t0:.2f}s", flush=True)
+    ok = ok and ready
+    for path in wav_paths:
+        result = transcriber.transcribe(path)
+        print(f"[self-test] {Path(path).name}: \"{result.text}\" ({result.processing_time_sec:.2f}s)", flush=True)
+        ok = ok and bool(result.text.strip())
+    transcriber.close()
+    print(f"[self-test] {'PASSED' if ok else 'FAILED'}", flush=True)
+    return ok
+
+
 def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     # 0. Ensure NSApplication is initialized on macOS Main Thread first
     # This prevents Carbon TIS/TSM concurrency aborts when background threads start
@@ -69,7 +114,7 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     python_ver = sys.version.split()[0]
     executable = sys.executable
 
-    logger.info("Starting Utter...")
+    logger.info("Starting Utter%s...", " (app)" if engine_config.running_as_app() else " (from the project folder)")
     logger.info("Python interpreter: %s (%s)", executable, python_ver)
     logger.info("Host architecture: %s (Apple Silicon: %s)", arch, arch == "arm64")
 
@@ -118,8 +163,27 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
 
     if "--permissions" in sys.argv or "--check" in sys.argv:
         return None
+    if "--self-test" in sys.argv:
+        global _exit_code
+        _exit_code = 0 if self_test(config, sys.argv[sys.argv.index("--self-test") + 1:]) else 1
+        return None
 
-    # 4. Initialize Engine and Interface
+    # 4. One Utter at a time
+    global _instance_lock
+    if _instance_lock is None:
+        _instance_lock = acquire_single_instance_lock(paths.data_dir)
+        if _instance_lock is None:
+            logger.error("Utter is already running (menu bar). Quit that one first.")
+            try:
+                import rumps
+                rumps.alert("Utter is already running",
+                            "Utter is already in your menu bar (maybe started from the terminal or the "
+                            "Applications folder). Quit that one first, then open Utter again.")
+            except Exception:
+                pass
+            return None
+
+    # Initialize Engine and Interface
     session_manager = SessionManager(config=config)
     transcriber = MLXWhisperTranscriber(
         config=config.whisper,
@@ -142,4 +206,11 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
 
 
 if __name__ == "__main__":
-    main()
+    if main() is None:
+        # Command-line modes (--check, --self-test) or "already running": nothing to save, so
+        # skip Python's exit clean-up, which can wait on CoreAudio the first time a new build
+        # of Utter.app runs. (The menu bar app quits through macOS and never gets here.)
+        logging.shutdown()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(_exit_code)

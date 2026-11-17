@@ -24,3 +24,6 @@ whatsapp_layout*.txt
 
 # macOS system files
 .DS_Store
+
+# Built app (scripts/build_app.py)
+dist/
