@@ -27,3 +27,4 @@ whatsapp_layout*.txt
 
 # Built app (scripts/build_app.py)
 dist/
+dist.noindex/

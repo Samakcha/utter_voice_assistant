@@ -36,7 +36,12 @@ from .key_events import is_hold
 from . import menu_icon
 from .menu_icon import MenuBarIcon
 from .overlay import VoiceAssistantOverlay
-from .permissions import format_permissions_report, get_all_permissions, open_settings_pane
+from .permissions import (
+    format_permissions_report,
+    get_all_permissions,
+    open_settings_pane,
+    request_missing_permissions,
+)
 from .whatsapp_control import (
     WhatsAppActionResult,
     check_whatsapp_frontmost_dual,
@@ -1540,7 +1545,9 @@ class VoiceAssistantApp(rumps.App):
             cancel="Dismiss",
         )
         if choice == 1:
-            open_settings_pane(missing[0].name.lower())
+            # Ask macOS first, so Utter is in the list (the Microphone list has no + button)
+            request_missing_permissions(permissions)
+            open_settings_pane(missing[0].name.lower().replace(" ", "_"))  # "input_monitoring"
 
     def open_recordings_folder(self, _sender=None) -> None:
         """Open the recordings directory in Finder."""

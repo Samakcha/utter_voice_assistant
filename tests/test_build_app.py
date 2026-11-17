@@ -30,6 +30,11 @@ def test_app_carries_the_code_and_shipped_settings_but_never_personal_data():
     assert build_app.LAUNCHER_SOURCE.is_file()
 
 
+def test_builds_are_hidden_from_spotlight():
+    # Otherwise searching "Utter" can open the build copy instead of the installed app
+    assert build_app.DIST.name.endswith(".noindex")
+
+
 def test_dev_only_packages_are_left_out():
     for name in ("pip", "_pytest", "pytest", "PyObjCTest"):
         assert name in build_app.SITE_EXCLUDE

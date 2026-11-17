@@ -96,6 +96,49 @@ def open_settings_pane(pane_name: str) -> bool:
         return False
 
 
+def request_missing_permissions(permissions: Optional[Dict[str, PermissionItem]] = None) -> List[str]:
+    """
+    Ask macOS for each missing permission, the way apps must: this shows macOS's own prompt
+    and puts Utter in the right list in System Settings (the Microphone list has no + button,
+    so an app only appears there after it asks). Returns the names asked for.
+      Microphone        "Utter would like to access the microphone" (Allow / Don't Allow)
+      Accessibility     "Utter would like to control this computer..." (Open System Settings)
+      Input Monitoring  "Keystroke receiving" prompt (Open System Settings)
+    A permission already refused once is not asked again by macOS; it stays in the list, off.
+    """
+    permissions = permissions if permissions is not None else get_all_permissions()
+    asked: List[str] = []
+    if not permissions["microphone"].granted:
+        try:
+            import AVFoundation
+            status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(AVFoundation.AVMediaTypeAudio)
+            if status == 0:  # not asked yet
+                AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+                    AVFoundation.AVMediaTypeAudio, lambda granted: logger.info("Microphone access granted: %s", granted)
+                )
+                asked.append("Microphone")
+        except Exception as e:
+            logger.debug("Could not ask for the microphone: %s", e)
+    if not permissions["accessibility"].granted:
+        try:
+            from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
+            AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+            asked.append("Accessibility")
+        except Exception as e:
+            logger.debug("Could not ask for Accessibility: %s", e)
+    if not permissions["input_monitoring"].granted:
+        try:
+            import Quartz
+            if hasattr(Quartz, "CGRequestListenEventAccess"):
+                Quartz.CGRequestListenEventAccess()
+                asked.append("Input Monitoring")
+        except Exception as e:
+            logger.debug("Could not ask for Input Monitoring: %s", e)
+    if asked:
+        logger.info("Asked macOS for: %s", ", ".join(asked))
+    return asked
+
+
 def request_permissions_prompt() -> None:
     """Trigger system dialogs if permissions are not yet requested."""
     try:
@@ -143,8 +186,10 @@ def format_permissions_report(permissions: Optional[Dict[str, PermissionItem]] =
         lines.append("")
 
     if as_app:
-        lines.append("Note: turn each one on for \"Utter\" in System Settings. If Utter is listed")
-        lines.append("      but switched on and still not working, remove it with - and add it again.")
+        lines.append("Note: turn each one on for \"Utter\" in System Settings, then quit and reopen")
+        lines.append("      Utter (the hotkeys start only after Accessibility and Input Monitoring")
+        lines.append("      are on). If Utter is switched on and still not working, remove it with -")
+        lines.append("      and open Utter again.")
     else:
         lines.append("Note: If running from Terminal, iTerm2, or VS Code, you may need to grant")
         lines.append("      permission to that specific terminal application or to the Python binary.")

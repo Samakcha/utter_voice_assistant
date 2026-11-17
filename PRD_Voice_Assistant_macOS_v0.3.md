@@ -192,14 +192,17 @@ Milestone 3, stage 1: nothing Utter needs lives in the project folder any more, 
 ### 6.15 Utter.app (`scripts/build_app.py`, `packaging/launcher.c`)
 Milestone 3, stage 2: a double-clickable app in Applications instead of `uv run` in a terminal.
 
-1. **Build:** `uv run python scripts/build_app.py` makes `dist/Utter.app` (about 15 s); `--install` also copies it to `/Applications` (refused while Utter runs from there). **Nothing is downloaded:** the app is assembled from the project's code, the standalone Python that uv installed, and the packages in `.venv`, cloned on APFS (instant, no extra disk space until changed).
+1. **Build:** `uv run python scripts/build_app.py` makes `dist.noindex/Utter.app` (about 15 s); `--install` also copies it to `/Applications` (refused while Utter runs from there). **Nothing is downloaded:** the app is assembled from the project's code, the standalone Python that uv installed, and the packages in `.venv`, cloned on APFS (instant, no extra disk space until changed).
 2. **Inside the app** (about 1.4 GB): `Contents/MacOS/Utter` (launcher), `Contents/Resources/python` (a private Python 3.12 with the packages; tests, pip, pytest and tkinter left out), `Contents/Resources/app` (main.py, engine, interface, the shipped config.toml, assets), `Utter.icns` (from the 1024 px icon, 16 to 1024 px). Models, settings and personal data are **not** inside: they stay in `~/Library/Application Support/Utter` (6.14).
 3. **Launcher:** a small C program that runs Python inside its own process (embedded), so macOS sees one app called Utter and asks for, and remembers, permissions as "Utter" (not Terminal or Python). Python ignores outside `PYTHON*` settings and user packages, runs in UTF-8 mode (apps get no language setting from macOS), and never writes `.pyc` files into the signed app (they are compiled at build time).
 4. **Info.plist:** bundle id `com.utter.mac` (changing it later makes macOS treat Utter as a new app), menu bar only (`LSUIElement`, no Dock icon), Apple Silicon only, macOS 14+, and the texts macOS shows in the Microphone and Automation prompts (without them macOS stops the app when it asks).
 5. **Signing:** with a free self-signed certificate named **"Utter Developer"** in the login keychain, every build is signed with it, so macOS keeps Utter's permissions across rebuilds; without one the build is signed ad hoc (it runs, but each rebuild needs the permissions granted again). Create it once in Keychain Access → Certificate Assistant → Create a Certificate… (Name: Utter Developer; Identity Type: Self-Signed Root; Certificate Type: Code Signing). No Apple account or payment.
-6. **One Utter at a time:** a lock file in the data folder; a second copy (for example the app while the terminal version runs) shows "Utter is already running" and exits.
-7. **Self-test:** `Utter.app/Contents/MacOS/Utter --self-test file.wav` loads the voice detector and Whisper and transcribes, without menu bar, hotkeys or microphone; it can never hang (a 45 s watchdog prints every thread's stack and exits). `--check` prints the permission report. Both exit straight away when done (Python's exit clean-up once waited on CoreAudio on the first run of a new build).
-8. **Checked:** 10 new automated tests. The built app started from an empty environment (as macOS starts apps), read the user's settings and log file from the Utter folder, found the MacBook microphone, reported its permissions as "Utter.app", and transcribed a spoken sentence with `large-v3-turbo` exactly ("Open Safari and take a note about the meeting tomorrow.", 0.45 s; model ready in 1 to 5 s); 3 fresh builds and 9 runs exited cleanly. Not yet run as the menu bar app or with permissions; that is the user's live test.
+6. **Asking for permissions:** the app asks macOS for each missing permission at start (`request_missing_permissions`): the Microphone prompt ("Allow / Don't Allow"), the Accessibility prompt, and the Input Monitoring prompt. Asking is what puts Utter in those lists in System Settings: the Microphone list has no + button, so an app only appears there after it asks. "Check Permissions" → "Open System Settings" asks again before opening the right pane. A permission refused once is not asked again by macOS (it stays in the list, switched off). After turning on Accessibility and Input Monitoring, Utter must be quit and reopened for the hotkeys to start. The terminal version never asks (it uses the terminal's permissions).
+7. **Helper processes:** libraries such as multiprocessing start helpers by running the app's own executable with Python options (`-B -c ...`); the launcher runs those as plain Python, so they never start a second Utter.
+8. **Builds are not in Spotlight:** the build goes to `dist.noindex/` (Spotlight skips `.noindex` folders), so searching "Utter" only finds `/Applications/Utter.app`.
+9. **One Utter at a time:** a lock file in the data folder; a second copy (for example the app while the terminal version runs) shows "Utter is already running" and exits.
+10. **Self-test:** `Utter.app/Contents/MacOS/Utter --self-test file.wav` loads the voice detector and Whisper and transcribes, without menu bar, hotkeys or microphone; it can never hang (a 45 s watchdog prints every thread's stack and exits). `--check` prints the permission report. Both exit straight away when done (Python's exit clean-up once waited on CoreAudio on the first run of a new build).
+11. **Checked:** 16 new automated tests. The built app started from an empty environment (as macOS starts apps), read the user's settings and log file from the Utter folder, found the MacBook microphone, reported its permissions as "Utter.app", and transcribed a spoken sentence with `large-v3-turbo` exactly ("Open Safari and take a note about the meeting tomorrow.", 0.45 s; model ready in 1 to 5 s); 3 fresh builds and 9 runs exited cleanly. Not yet run as the menu bar app or with permissions; that is the user's live test.
 
 ### 6.11 Personal word list
 Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "Supabase") without retraining anything.
@@ -260,7 +263,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 804 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 810 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -295,10 +298,10 @@ voice-assistant/
                                whatsapp_control
   assets/                      utter-app-icon.png (drawn by scripts/make_app_icon.py)
   packaging/                   launcher.c (Utter.app's main executable; compiled by scripts/build_app.py)
-  dist/                        Utter.app after a build (gitignored)
+  dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       804 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       810 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -347,7 +350,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 804 passing |
+| Automated tests | 810 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 

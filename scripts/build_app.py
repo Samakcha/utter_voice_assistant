@@ -2,7 +2,7 @@
 """
 Build Utter.app: a self-contained Mac app (its own Python and packages inside).
 
-  uv run python scripts/build_app.py            build dist/Utter.app
+  uv run python scripts/build_app.py            build dist.noindex/Utter.app
   uv run python scripts/build_app.py --install  build, then copy it to /Applications
 
 Nothing is downloaded: the app is assembled from this project's code, the Python that
@@ -38,7 +38,8 @@ VERSION = "0.4.0"
 MIN_MACOS = "14.0"
 SIGNING_IDENTITY = "Utter Developer"
 
-DIST = PROJECT_ROOT / "dist"
+# ".noindex": Spotlight skips this folder, so searching "Utter" only finds the installed app
+DIST = PROJECT_ROOT / "dist.noindex"
 APP_CODE = ["main.py", "config.toml", "engine", "interface", "assets"]
 ICON_SOURCE = PROJECT_ROOT / "assets" / "utter-app-icon.png"
 LAUNCHER_SOURCE = PROJECT_ROOT / "packaging" / "launcher.c"
