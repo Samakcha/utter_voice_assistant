@@ -1,9 +1,9 @@
 """
 The moving sound wave shown in the pop-up while Utter listens (command, dictation, notes).
 
-Many thin bars, centred on a line, like an audio waveform. Each frame takes the live
+A few thin bars in a small pill, centred on a line, like an audio waveform. Each frame takes the live
 microphone level, adds a little natural variation, and pushes it in from the right, so the
-wave scrolls left while you speak; silence leaves a row of short dashes. The bars get shorter
+wave scrolls left while you speak; silence leaves a row of tiny dots. The bars get shorter
 towards both ends. Plain geometry here (testable); interface/overlay.py draws it.
 """
 
@@ -12,15 +12,16 @@ import math
 import random
 from typing import List, Optional, Sequence, Tuple
 
-BAR_COUNT = 40
-BAR_W = 2.4
-BAR_GAP = 2.2
-PAD_X = 22.0
-HEIGHT = 40.0  # the pop-up while listening, in points
-MAX_BAR = 26.0
-MIN_BAR = 2.4  # silence: short dashes, so it still reads as "listening"
+# A compact pill (in the style of Wispr Flow's), about 94 x 26 points
+BAR_COUNT = 16
+BAR_W = 2.0
+BAR_GAP = 2.0
+PAD_X = 16.0
+HEIGHT = 26.0  # the pop-up while listening, in points
+MAX_BAR = 14.0
+MIN_BAR = 2.0  # silence: tiny dots, so it still reads as "listening"
 WIDTH = PAD_X * 2 + BAR_COUNT * BAR_W + (BAR_COUNT - 1) * BAR_GAP
-FRAMES_PER_SEC = 24.0
+FRAMES_PER_SEC = 16.0  # 16 bars at 16 frames a second: the last second of your voice
 
 Rect = Tuple[float, float, float, float]  # x, y, width, height (points, origin bottom-left)
 

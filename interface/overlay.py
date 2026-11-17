@@ -63,10 +63,14 @@ class VoiceAssistantOverlay:
     whenever a new state is presented.
     """
 
-    DEFAULT_HEIGHT = 44.0
-    MIN_WIDTH = 260.0
-    MAX_WIDTH = 780.0
-    PADDING = 36.0
+    # Compact pills (Wispr Flow style), kept at the top of the screen just under the menu bar
+    DEFAULT_HEIGHT = 30.0  # text messages; the wave pill is waveform.HEIGHT (26)
+    MIN_WIDTH = 120.0
+    MAX_WIDTH = 560.0
+    PADDING = 16.0
+    TOP_MARGIN = 6.0  # gap below the menu bar
+    FONT_SIZE = 12.5
+    LABEL_HEIGHT = 17.0
 
     def __init__(self):
         self.panel: Optional[NonActivatingPanel] = None
@@ -112,6 +116,12 @@ class VoiceAssistantOverlay:
             self.effect_view.setWantsLayer_(True)
             self.effect_view.layer().setCornerRadius_(self.DEFAULT_HEIGHT / 2.0)
             self.effect_view.layer().setMasksToBounds_(True)
+            # Always the dark look, with a hairline edge (also in Light mode)
+            self.effect_view.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
+            self.effect_view.layer().setBorderWidth_(0.5)
+            self.effect_view.layer().setBorderColor_(
+                AppKit.NSColor.colorWithWhite_alpha_(1.0, 0.18).CGColor()
+            )
 
             # Text label
             self.label = AppKit.NSTextField.alloc().initWithFrame_(
@@ -122,7 +132,7 @@ class VoiceAssistantOverlay:
             self.label.setEditable_(False)
             self.label.setSelectable_(False)
             self.label.setTextColor_(AppKit.NSColor.whiteColor())
-            self.label.setFont_(AppKit.NSFont.systemFontOfSize_weight_(13.5, AppKit.NSFontWeightMedium))
+            self.label.setFont_(AppKit.NSFont.systemFontOfSize_weight_(self.FONT_SIZE, AppKit.NSFontWeightMedium))
             self.label.setAlignment_(AppKit.NSTextAlignmentCenter)
 
             self.effect_view.addSubview_(self.label)
@@ -167,23 +177,11 @@ class VoiceAssistantOverlay:
                 text_width = self.label.frame().size.width
                 pill_width = max(self.MIN_WIDTH, min(text_width + self.PADDING * 2, self.MAX_WIDTH))
                 pill_height = self.DEFAULT_HEIGHT
-
-                # Position at top center of main display
-                screen = AppKit.NSScreen.mainScreen() or AppKit.NSScreen.screens()[0]
-                screen_frame = screen.visibleFrame()
-
-                x = screen_frame.origin.x + (screen_frame.size.width - pill_width) / 2.0
-                y = screen_frame.origin.y + screen_frame.size.height - pill_height - 35.0
-
-                pill_rect = AppKit.NSMakeRect(x, y, pill_width, pill_height)
-                self.panel.setFrame_display_(pill_rect, True)
-
-                # Update subview frames
-                content_rect = AppKit.NSMakeRect(0, 0, pill_width, pill_height)
-                self.effect_view.setFrame_(content_rect)
-                self.effect_view.layer().setCornerRadius_(pill_height / 2.0)
-
-                label_rect = AppKit.NSMakeRect(self.PADDING, (pill_height - 22.0) / 2.0, pill_width - (self.PADDING * 2), 22.0)
+                self._place(pill_width, pill_height)
+                label_rect = AppKit.NSMakeRect(
+                    self.PADDING, (pill_height - self.LABEL_HEIGHT) / 2.0,
+                    pill_width - (self.PADDING * 2), self.LABEL_HEIGHT,
+                )
                 self.label.setFrame_(label_rect)
 
                 # Show on screen without activating or stealing focus
@@ -263,7 +261,7 @@ class VoiceAssistantOverlay:
         screen = AppKit.NSScreen.mainScreen() or AppKit.NSScreen.screens()[0]
         frame = screen.visibleFrame()
         x = frame.origin.x + (frame.size.width - width) / 2.0
-        y = frame.origin.y + frame.size.height - height - 35.0
+        y = frame.origin.y + frame.size.height - height - self.TOP_MARGIN
         self.panel.setFrame_display_(AppKit.NSMakeRect(x, y, width, height), True)
         self.effect_view.setFrame_(AppKit.NSMakeRect(0, 0, width, height))
         self.effect_view.layer().setCornerRadius_(height / 2.0)
