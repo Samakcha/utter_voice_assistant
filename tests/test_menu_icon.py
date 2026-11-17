@@ -269,27 +269,48 @@ def test_problems_are_still_shown_as_text(monkeypatch, call, expected):
     assert len(events) == 1 and events[0][0] == "text" and expected in events[0][1]
 
 
-def test_wave_scrolls_with_the_voice_and_rests_as_dashes():
+def test_wave_scrolls_with_the_voice_and_stays_small_in_silence():
     import random
     from interface import waveform as wf
     wave = wf.WaveState(rng=random.Random(7))
     quiet = wave.step(0.0)
-    assert len(quiet) == wf.BAR_COUNT and max(quiet) == 0.0
+    assert len(quiet) == wf.BAR_COUNT and max(quiet) <= wf.IDLE  # silence: only small twitches
     for _ in range(wf.BAR_COUNT):
         loud = wave.step(1.0)
     assert min(loud) > 0.05 and max(loud) <= 1.0
-    middle, end = loud[wf.BAR_COUNT // 2], loud[0]
     assert wf.taper(wf.BAR_COUNT // 2) > wf.taper(0)  # tall in the middle, short at the ends
     newest = wave.history[-1]
     wave.step(1.0)
     assert wave.history[-2] == newest  # scrolls: each frame pushes the wave one bar left
-    for _ in range(60):
+    for _ in range(30):
         rest = wave.step(0.0)
-    assert max(rest) < 0.01  # falls back to dashes when you stop talking
-    rects = wf.bar_rects(rest)
-    assert all(r[3] == wf.MIN_BAR for r in rects)
+    assert max(rest) <= wf.IDLE  # back to small twitches quickly when you stop talking
     for x, y, w, h in wf.bar_rects(loud):
         assert x >= 0 and y >= 0 and x + w <= wf.WIDTH + 1e-9 and y + h <= wf.HEIGHT + 1e-9
+        assert w == wf.BAR_W == 3.0  # bold bars
+
+
+def test_wave_is_lively_not_smooth():
+    import random
+    import statistics
+    from interface import waveform as wf
+    wave = wf.WaveState(rng=random.Random(11))
+    frames = [wave.step(0.5) for _ in range(48)][wf.BAR_COUNT:]
+    middle = [f[wf.BAR_COUNT // 2] for f in frames]
+    jumps = [abs(a - b) for a, b in zip(middle, middle[1:])]
+    assert statistics.mean(jumps) > 0.12  # the middle bar jumps a lot from frame to frame
+    assert statistics.pstdev(frames[-1]) > 0.08  # neighbouring bars differ clearly
+    # quiet speech still makes clearly visible bars
+    soft = wf.WaveState(rng=random.Random(3))
+    for _ in range(wf.BAR_COUNT):
+        bars = soft.step(0.3)  # soft speech, about -46 dBFS
+    assert max(bars) * wf.MAX_BAR > 2 * wf.MIN_BAR
+    # it calms down fast once you stop: under a third of a second
+    stop = wf.WaveState(rng=random.Random(5))
+    stop.step(1.0)
+    for _ in range(int(wf.FRAMES_PER_SEC / 3)):
+        stop.step(0.0)
+    assert stop.smoothed < 0.01
 
 
 def test_wave_view_draws_without_errors():

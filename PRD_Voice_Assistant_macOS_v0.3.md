@@ -136,8 +136,8 @@ The whole normalized utterance must match a command's grammar: lowercase, punctu
 
 ### 6.7 Overlay (the pop-up at the top of the screen)
 - A small floating, **non-activating** panel at the top center of the screen: it never takes keyboard focus, appears over full-screen apps and all Spaces, and fades out on its own.
-- **Compact, at the top:** a small dark pill in the style of Wispr Flow's (only the look; Utter's stays at the top of the screen, 6 points under the menu bar, centred). Always dark with a hairline light edge, in Light and Dark mode. The wave pill is 94 × 26 points (it was 226 × 40); message pills are 30 points tall and as wide as their text (at least 120).
-- **While listening** (command, dictation or note) it shows only a **moving sound wave**, no text (`interface/waveform.py`): 16 thin white bars, centred on a line and shorter towards both ends. Each frame (16 per second) pushes in the live microphone level with a little natural variation, so the wave scrolls left while you speak (the last second of your voice); silence leaves a row of tiny dots. The same microphone level drives the menu bar bars.
+- **Compact, at the top:** a small dark pill in the style of Wispr Flow's (only the look; Utter's stays at the top of the screen, 6 points under the menu bar, centred). Always dark with a hairline light edge, in Light and Dark mode. The wave pill is 96 × 26 points (it was 226 × 40); message pills are 30 points tall and as wide as their text (at least 120).
+- **While listening** (command, dictation or note) it shows only a **moving sound wave**, no text (`interface/waveform.py`): 14 bold white bars (3 points wide, up to 18 tall), centred on a line and shorter towards both ends. It is deliberately lively (asked for by the user): 24 frames a second, quiet speech boosted (level to the power 0.5), strong differences between neighbouring bars, every bar flickering each frame while you speak, and small twitches even in silence; it reacts at once and calms down within about a third of a second. Each frame pushes in the live microphone level, so the wave scrolls left while you speak. The same microphone level drives the menu bar bars.
 - **Afterwards it simply disappears:** no "Transcribing", "Inserted N words", "Heard … → Opening …", "Saved note" or WhatsApp progress messages (chosen by the user on 18 November 2026). The pasted text, the opened app or the new note is the confirmation.
 - **Problems are still shown as text**, because otherwise there is no way to know why nothing happened: unknown or ambiguous app names, "Nothing recognized", "Nothing to insert / save", action failures, "Couldn't save note … text copied to clipboard", the WhatsApp warnings and the WhatsApp "pick the chat, click the message box" guidance.
 - All AppKit work runs on the main thread only; each new state cancels any pending fade-out, and the wave's timer runs only while the wave is shown.
@@ -266,7 +266,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 826 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 827 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -304,7 +304,7 @@ voice-assistant/
   dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       826 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       827 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -353,7 +353,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 826 passing |
+| Automated tests | 827 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
