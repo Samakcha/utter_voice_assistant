@@ -44,6 +44,8 @@ def test_launcher_runs_python_inside_utter_safely():
     assert "config.use_environment = 0" in source and "config.user_site_directory = 0" in source
     assert "preconfig.utf8_mode = 1" in source  # apps get no LANG from macOS
     assert "Resources/app/main.py" in source and "Resources/python" in source
+    # multiprocessing's helper runs `Utter -B -c ...`: that must be plain Python, not a second Utter
+    assert "python_mode" in source and "if (!python_mode) args[n++] = script;" in source
 
 
 SECURITY_OUTPUT = """

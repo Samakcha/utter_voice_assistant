@@ -76,13 +76,20 @@ int main(int argc, char *argv[]) {
     status = PyConfig_SetBytesString(&config, &config.program_name, real);
     if (PyStatus_Exception(status)) fail("program name", status, &config);
 
-    /* Same as running: python main.py <arguments given to the app> */
+    /* Libraries start helper processes by running this program as if it were Python itself,
+       e.g. multiprocessing's resource tracker: `Utter -B -c "from multiprocessing..."`.
+       Python's own options start with a single "-" (Utter's are "--check", "--self-test"),
+       so then behave as plain Python instead of starting a second Utter. */
+    int python_mode = argc > 1 && argv[1][0] == '-' && argv[1][1] != '-' && argv[1][1] != '\0';
+
+    /* Otherwise the same as running: python main.py <arguments given to the app> */
     char **args = calloc((size_t)argc + 2, sizeof(char *));
     if (!args) return 1;
-    args[0] = real;
-    args[1] = script;
-    for (int i = 1; i < argc; i++) args[i + 1] = argv[i];
-    status = PyConfig_SetBytesArgv(&config, argc + 1, args);
+    int n = 0;
+    args[n++] = real;
+    if (!python_mode) args[n++] = script;
+    for (int i = 1; i < argc; i++) args[n++] = argv[i];
+    status = PyConfig_SetBytesArgv(&config, n, args);
     free(args);
     if (PyStatus_Exception(status)) fail("arguments", status, &config);
 
