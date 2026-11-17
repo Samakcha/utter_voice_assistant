@@ -75,9 +75,12 @@ def test_transcriber_without_local_weights_fails_clearly(tmp_path):
         tx.close()
 
 
-def test_real_config_model_resolves_locally():
-    # Whatever config.toml names, the app must find weights on disk (or the small fallback)
+def test_real_config_model_resolves_locally(monkeypatch):
+    # Whatever config.toml names, the app must find weights on disk (or the small fallback):
+    # in the Utter data folder, or in the project's ./models until they are moved there
+    import engine.config as engine_config
     from engine.config import load_config
+    monkeypatch.setattr(engine_config, "LEGACY_MODELS_DIR", engine_config.PROJECT_ROOT / "models")
     cfg = load_config()
     path, _ = resolve_local_model(cfg.whisper.model_size, cfg.whisper.models_dir)
     assert path is not None and Path(path).is_dir()

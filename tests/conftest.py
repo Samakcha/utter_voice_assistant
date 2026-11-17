@@ -7,8 +7,9 @@ Ensures that across the ENTIRE test suite:
 4. subprocess calls to `open` (launching apps) or `lsappinfo` are intercepted and raise.
 5. get_general_pasteboard() is redirected to an isolated in-memory test pasteboard
    so the developer's real clipboard is NEVER read or modified by any test.
-6. No test may write recordings or note backups into the real user data folder
-   (~/Library/Application Support/VoiceAssistant).
+6. No test may write into the real user data folder (~/Library/Application Support/Utter,
+   or the old .../VoiceAssistant), the real log folder (~/Library/Logs/Utter), or move the
+   project's Whisper models: engine.config.data_paths() points at a per-test folder.
 7. No test reads the user's real personal word list: any word-list path inside the real
    data folder is redirected to an empty per-test file location.
 """
@@ -120,23 +121,61 @@ def isolate_real_word_list(monkeypatch, tmp_path):
     monkeypatch.setattr(vocabulary.VocabularyStore, "__init__", _isolated_init)
 
 
-# 6. Real user data folder: no test may write recordings or note backups into it.
-def _snapshot_real_data_dir():
-    from engine.config import DEFAULT_DATA_DIR
-    root = DEFAULT_DATA_DIR.expanduser()
-    if not root.exists():
-        return root, set()
-    return root, {p for p in root.rglob("*") if p.is_file()}
+# 6. Real user data folders: no test may write into them, rename them, or move the models.
+import engine.config as _engine_config  # noqa: E402  (real paths, captured before any test patches them)
+
+_REAL_ROOTS = [p.expanduser() for p in (
+    _engine_config.DEFAULT_DATA_DIR, _engine_config.LEGACY_DATA_DIR, _engine_config.DEFAULT_LOG_DIR)]
+_REAL_PROJECT_MODELS = _engine_config.LEGACY_MODELS_DIR
+
+
+def _snapshot_real_data_dirs():
+    files = set()
+    for root in _REAL_ROOTS:
+        if root.exists():
+            files |= {p for p in root.rglob("*") if p.is_file()}
+    models = sorted(p.name for p in _REAL_PROJECT_MODELS.iterdir()) if _REAL_PROJECT_MODELS.is_dir() else []
+    exists = tuple(root.exists() for root in _REAL_ROOTS)
+    return files, models, exists
+
+
+@pytest.fixture(autouse=True)
+def isolate_data_paths(monkeypatch, tmp_path):
+    """data_paths() (used by main.py and the scripts) points at a per-test folder."""
+    import engine.config as engine_config
+    from engine.config import DataPaths
+    test_paths = DataPaths(
+        data_dir=tmp_path / "utter-data",
+        legacy_data_dir=tmp_path / "legacy-data",
+        log_dir=tmp_path / "utter-logs",
+        legacy_models_dir=tmp_path / "project-models",
+        default_config=engine_config.DEFAULT_CONFIG_PATH,
+    )
+    monkeypatch.setattr(engine_config, "data_paths", lambda: test_paths)
+    # The fallback model folder too, so model lookups in tests never depend on this Mac
+    monkeypatch.setattr(engine_config, "LEGACY_MODELS_DIR", test_paths.legacy_models_dir)
+    # rumps.App creates ~/Library/Application Support/<app name> (= Utter's data folder)
+    import rumps.rumps as rumps_module
+    support = tmp_path / "rumps-support"
+
+    def _test_application_support(name):
+        path = support / name
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+    monkeypatch.setattr(rumps_module, "application_support", _test_application_support)
+    return test_paths
 
 
 @pytest.fixture(autouse=True)
 def real_data_dir_guard():
-    root, before = _snapshot_real_data_dir()
+    before = _snapshot_real_data_dirs()
     yield
-    _, after = _snapshot_real_data_dir()
-    created = after - before
+    after = _snapshot_real_data_dirs()
+    created = after[0] - before[0]
     if created:
         pytest.fail(
-            f"SAFETY NET: test wrote into the real user data folder {root}: "
+            f"SAFETY NET: test wrote into a real user data folder: "
             f"{sorted(str(p) for p in created)}. Point the test's storage paths at tmp_path."
         )
+    if after[1:] != before[1:]:
+        pytest.fail("SAFETY NET: a test renamed the real data folder or moved the project's models.")

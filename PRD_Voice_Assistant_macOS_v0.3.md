@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Product name:** Utter (chosen 17 November 2026)
-**Status:** v0.3.10 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1).
+**Status:** v0.3.11 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14).
 **Last updated:** 17 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -69,7 +69,7 @@ All hotkeys are handled by **one single keyboard listener** (see section 11 for 
 ## 6. Functional Requirements
 
 ### 6.1 App shell
-- Menu bar app named **Utter**, with Stop Utter / Start Utter / Quit, a "Check Permissions" item, "Edit Word List…" (see 6.11), and "Open Recordings Folder" (the folder only fills when `keep_recordings = true`). The first menu line spells out the status in words.
+- Menu bar app named **Utter**, with Stop Utter / Start Utter / Quit, a "Check Permissions" item, "Edit Word List…" (see 6.11), "Edit Settings…" (the user's `config.toml`, 6.14), "Open Log" (6.14), and "Open Recordings Folder" (the folder only fills when `keep_recordings = true`). The first menu line spells out the status in words.
 - **Icon only in the menu bar, no text** (`interface/menu_icon.py`), drawn in code as a macOS template image, so it turns white or black to match the menu bar like other apps' icons. One fixed size (18 × 16 points) in every state, so neighbouring icons never shift:
   - **Ready:** a still five-bar waveform, the Utter mark.
   - **Command mode:** a pulsing orb, slightly larger while you speak.
@@ -146,7 +146,7 @@ The whole normalized utterance must match a command's grammar: lowercase, punctu
 3. It ends on a stop phrase ("stop note"), either hotkey, the **10 s** silence timeout, or Esc (creates nothing).
 4. At the end, **one new note** is created in Apple Notes with a title line (default `Voice note {date} {time}`) and the full text.
 5. **Saving:** `osascript` (AppleScript) with the text passed as **arguments** (never spliced into script source, so quotes, backslashes and injection attempts are inert). The body is HTML-escaped (`&`, `<`, `>`), newlines become `<br>`, and Hindi/emoji text is preserved. Runs on a worker thread with a 15 s timeout. Notes is not brought to the front unless `reveal_after_save = true`.
-6. **Never lose dictation:** if saving fails for any reason (including Automation permission denied, error -1743), the text is copied to the clipboard as normal text and written to a backup `.txt` in `~/Library/Application Support/VoiceAssistant/note_backups/` (not pruned), and the overlay explains why.
+6. **Never lose dictation:** if saving fails for any reason (including Automation permission denied, error -1743), the text is copied to the clipboard as normal text and written to a backup `.txt` in `~/Library/Application Support/Utter/note_backups/` (not pruned), and the overlay explains why.
 7. Empty text creates nothing ("Nothing to save").
 
 ### 6.9 WhatsApp navigation
@@ -170,18 +170,29 @@ Targets the **native WhatsApp desktop app** (Mac Catalyst; bundle id `net.whatsa
 ### 6.10 Privacy requirements
 - **Names spoken in WhatsApp searches are redacted at the source** (`<name: N chars>`) in every output: terminal blocks, log lines and macOS notifications (which persist in Notification Center). The on-screen overlay may show the name.
 - **No audio on disk by default** (`keep_recordings = false`): command, dictation and note audio is transcribed from memory and never written as a WAV file. Command mode passes the captured audio to Whisper as an in-memory array; dictation and notes already transcribe in-memory chunks. Setting `keep_recordings = true` saves recent recordings for debugging or for building a benchmark set (at most `max_recordings_kept`, oldest pruned first).
-- **Personal data lives outside the project folder:** recordings (when kept) and failed-note backups go to `~/Library/Application Support/VoiceAssistant/`, not next to the code, where a coding agent could read them.
+- **Personal data lives outside the project folder:** recordings (when kept) and failed-note backups go to `~/Library/Application Support/Utter/`, not next to the code, where a coding agent could read them.
 - `keep_whatsapp_audio = false`: when recordings are kept, the WAV of a WhatsApp command is still deleted right after transcription.
 - `keep_audio_when_whatsapp_front = false`: when WhatsApp is in front, dictation and note audio are not kept even if `keep_recordings = true`, and the dictated text is not logged (word count only).
 - No contacts file and no WhatsApp data folders are read. All tests use obviously fake names ("Alex Test", "Sam Example").
 - **Older data left in place:** `recordings/` and `note_backups/` in the project folder, written by builds before v0.3.2, were not moved or deleted. The user decides what to keep (the recordings are useful for the benchmark in section 15).
-- **Test safety net:** `conftest.py` fails any test that writes into `~/Library/Application Support/VoiceAssistant/`, and redirects any word-list path there to an empty test file, so tests never read the user's real names.
+- **Test safety net:** `conftest.py` fails any test that writes into `~/Library/Application Support/Utter/`, the old `.../VoiceAssistant/` or `~/Library/Logs/Utter/`, renames them, or moves the project's models; the data paths, the fallback model folder and the folder rumps creates per app all point at a per-test folder; any word-list path in the real folder is redirected to an empty test file, so tests never read the user's real names.
+- **Log file:** contains what the logger writes (timings, recognized commands, errors), with the same redaction as before; dictated and note text is never written to it (that only appears in the terminal).
 - **Word list:** stored with the other personal data (6.11); logs show only how many words were fixed unless `redact_names_in_logs = false`.
+
+### 6.14 Data folder, settings file and log (`engine/data_folder.py`)
+Milestone 3, stage 1: nothing Utter needs lives in the project folder any more, so the packaged app can run on its own.
+
+1. **Data folder:** `~/Library/Application Support/Utter` (word list, accuracy recordings, note backups, settings, models). On the first start of v0.3.11 the old `~/Library/Application Support/VoiceAssistant` is **renamed** to it: nothing is copied or deleted. If both exist with data, nothing is merged and the old one is left as it is. An empty Utter folder (rumps creates one per app name) does not block the rename.
+2. **Settings:** the shipped `config.toml` (project folder, later inside the app) holds the defaults and is copied once to `<data folder>/config.toml`; Utter reads that copy from then on, so settings survive updates. Menu: "Edit Settings…" opens it in the text editor; changes apply after a restart. The accuracy and benchmark scripts read the same file.
+3. **Models:** moved from the project's `./models` to `<data folder>/models` on first start (a rename on the same disk: instant, no extra space). Each model is moved under a temporary `.moving` name and renamed when complete, so an interrupted move is redone from the intact original; a model already in the data folder is never overwritten. The project's `./models` is still searched if a model is missing in the data folder.
+4. **Log file:** `~/Library/Logs/Utter/utter.log`, up to 1 MB, plus 3 older files; menu "Open Log" opens it in Console. The command log line now includes the speech-end-to-result time.
+5. **Never blocks start-up:** a step that fails is logged and Utter starts anyway (shipped settings, models found in the old place). The accuracy script runs the same setup first, in case it runs before the app.
+6. **Checked:** 16 new automated tests (rename, both folders present, settings copied once and kept, models moved, never overwritten, interrupted move, failure, log file, startup, menu items). Rehearsed on instant clones of the user's real data folder (147 files) and models: everything carried over, the word list was byte-identical, both models moved, the settings file was created, the move took 0.001 s, and a second start changed nothing.
 
 ### 6.11 Personal word list
 Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "Supabase") without retraining anything.
 
-1. **The list:** `~/Library/Application Support/VoiceAssistant/vocabulary.txt`, one name or term per line, spelled the way it should be written; `#` starts a comment. The menu item "Edit Word List…" creates the file with instructions (if missing) and opens it in the default text editor. Edits apply from the next dictation without a restart (the file is re-read when it changes).
+1. **The list:** `~/Library/Application Support/Utter/vocabulary.txt`, one name or term per line, spelled the way it should be written; `#` starts a comment. The menu item "Edit Word List…" creates the file with instructions (if missing) and opens it in the default text editor. Edits apply from the next dictation without a restart (the file is re-read when it changes).
 2. **Scope:** dictation and notes only. Commands are never hinted or corrected, so the command rules stay predictable.
 3. **Hint to Whisper:** each chunk's prompt is `[initial_prompt] Vocabulary: a, b, c. [previous chunk]`. At most 50 terms and about 400 characters, and the previous chunk is trimmed to about 300 characters, because mlx-whisper keeps only the last 223 prompt tokens and long hints can make Whisper invent words. With an empty list the prompts are exactly as before.
 4. **Echo guard:** if Whisper repeats the hint back ("Vocabulary: …", or a transcript that is only three or more listed terms), it is removed from that chunk before stop-phrase detection, so an echo can never hide a trailing stop phrase.
@@ -237,7 +248,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 778 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 794 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -273,28 +284,36 @@ voice-assistant/
   assets/                      utter-app-icon.png (drawn by scripts/make_app_icon.py)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       778 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       794 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
+  models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
-~/Library/Application Support/VoiceAssistant/
+~/Library/Application Support/Utter/     (was .../VoiceAssistant/, renamed on first start of v0.3.11)
+  config.toml                  your settings (copied once from the shipped config.toml)
+  models/                      Whisper weights (large-v3-turbo, small)
   recordings/                  only when keep_recordings = true
   note_backups/                failed-note text backups (never pruned)
   vocabulary.txt               personal word list (created from the menu)
+  accuracy/, accuracy-macmic/  accuracy recordings and reports
+
+~/Library/Logs/Utter/utter.log           log file (1 MB, 3 older files kept)
 ```
 
 ## 8. Configuration reference (`config.toml`)
+
+Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from the shipped file; see 6.14). The defaults below are the shipped values.
 
 | Section | Key settings (defaults) |
 |---|---|
 | hotkeys / timeouts | command `<ctrl>+<alt>+m`; dictation `<ctrl>+<alt>+d`; cancel `<esc>`; `hold_to_talk = true`, `hold_min_sec = 0.4`, `hold_release_tail_sec = 0.3`; command silence 1.5 s; command early check 0.6 s (0 turns early finish off); command no-speech 5.0 s; dictation silence 8.0 s |
 | `[vad]` | `speech_threshold = 0.35`, `min_speech_chunks = 2` |
 | `[normalization]` | `enabled = true`, `target_peak_dbfs = -3.0`, `max_gain_db = 20.0` |
-| `[whisper]` | `model_size = "large-v3-turbo"` (falls back to `"small"` if not downloaded), `language = "en"`, `initial_prompt = ""`, `models_dir = "./models"` |
+| `[whisper]` | `model_size = "large-v3-turbo"` (falls back to `"small"` if not downloaded), `language = "en"`, `initial_prompt = ""`, `models_dir = "~/Library/Application Support/Utter/models"` |
 | `[dictation]` | `chunk_pause_sec = 0.8`, `min_speech_ms = 250`, `stop_phrases = ["stop dictation", "end dictation"]`, `fuzzy_tolerance = 0.2`, `context_prompt = true`, `clipboard_restore_delay_ms = 400`, `modifier_release_timeout_ms = 500`, `trailing_space = false` |
 | `[notes]` | `stop_phrases = ["stop note", "stop dictation", "end dictation"]`, `silence_sec = 10.0`, `title_template = "Voice note {date} {time}"`, `folder = ""`, `reveal_after_save = false`, optional ready sound |
-| `[storage]` | `recordings_dir = "~/Library/Application Support/VoiceAssistant/recordings"`, `max_recordings_kept = 20`, `note_backups_dir = "~/Library/Application Support/VoiceAssistant/note_backups"` |
+| `[storage]` | `recordings_dir = "~/Library/Application Support/Utter/recordings"`, `max_recordings_kept = 20`, `note_backups_dir = "~/Library/Application Support/Utter/note_backups"` |
 | `[privacy]` | `redact_names_in_logs = true`, `keep_whatsapp_audio = false`, `keep_audio_when_whatsapp_front = false`, `keep_recordings = false` |
-| `[vocabulary]` | `enabled = true`, `file = "~/Library/Application Support/VoiceAssistant/vocabulary.txt"`, `max_prompt_terms = 50`, `auto_correct = true` |
+| `[vocabulary]` | `enabled = true`, `file = "~/Library/Application Support/Utter/vocabulary.txt"`, `max_prompt_terms = 50`, `auto_correct = true` |
 | `[apps]` | `enabled = true`; `[apps.aliases]` spoken name = app name |
 | `[cleanup]` | `enabled = true`, `fillers = true`, `repeats = true`, `corrections = true` |
 
@@ -314,7 +333,7 @@ voice-assistant/
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 778 passing |
+| Automated tests | 794 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -329,7 +348,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 - **Record** (`uv run python scripts/accuracy.py record`): shows one sentence at a time and saves the audio together with the exact sentence, so no transcripts are typed by hand. 78 fixed sentences in five groups (22 commands including 4 that must do nothing, 26 short and 14 long dictation sentences, 6 with numbers, 10 with tech words) plus one sentence per word-list term (up to 12). v0.3.8 adds 10 app commands (c23 to c32: 8 apps that ship with macOS, plus "open the door" and "open Safari and search for flights", which must open nothing); app commands are scored by which installed app would open. v0.3.9 adds 13 cleanup sentences (e01 to e13), said with "um"s, repeats and corrections on purpose; each has the tidy text it should become, and they are scored on their own so they never lower the dictation score. About 20 minutes; skip, redo and quit at any point, and it resumes by sentence text. Takes that are under 0.6 s or quieter than −45 dBFS prompt a redo. The microphone opens only while recording and is always closed on quit or Ctrl+C.
 - **Score** (`uv run python scripts/accuracy.py score`): runs every recording through the app's own steps (the configured local model, normalization and silence guard; the word-list hint, echo strip and correction for dictation; no word list and the command rules for commands). Reports % of words right (word-weighted) per group, how many commands would have done the right thing (right action, right name, or nothing), how many word-list terms were spelled exactly, and the same dictation scored without the word list and without cleanup (with how many normal sentences cleanup changed), plus how many cleanup sentences came out exactly right with and without cleanup. It also lists the worst mistakes. Offline only.
 - **What is not an error:** both sentences are rewritten into one standard form before words are compared: punctuation and capitals dropped, contractions expanded ("I'm" = "I am", "can't" = "cannot"; "it's" = "it is" and "I'd" = "I would" after common pronouns only), joined and split spellings unified ("every day" = "everyday", "OK" = "okay"), hyphens read as spaces, number words as digits ("two" = "2", "twenty five" = "25"), and "p.m." = "pm". Real mishearings still count ("notes" / "nodes", "its" / "it's").
-- **Storage:** recordings, the manifest and the reports go to `~/Library/Application Support/VoiceAssistant/accuracy/`, never the project folder; deleting that folder removes everything.
+- **Storage:** recordings, the manifest and the reports go to `~/Library/Application Support/Utter/accuracy/`, never the project folder; deleting that folder removes everything.
 - **Limits:** long sentences are scored whole, while the app splits dictation at pauses; ordinals ("15th" vs "fifteenth") and accents ("MADRÉ" vs "Madre") still count as errors; the score is for the microphone used while recording.
 - **Checked on synthesized speech** (9 sentences, turbo): 98.1% of dictation words right; 3 of 4 commands right (the Mac voice's "WhatsApp" was heard as "Vharts app", a synthetic-voice quirk seen before). - **First real results (7 November 2026, turbo, the user's voice):**
   - *Dictation, CMF Buds 2 Plus earbuds:* 99.1% of words right (7 errors in 787 words; 96.9% before the spelling-only fix, when 17 of the 24 errors were "I'm" / "I am" and similar). Short 99.6%, long 99.7%, numbers 93.3%, tech words 100%, word-list sentences 97.0%.
@@ -377,7 +396,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 | Stop phrase appears in normal speech | End-of-transcript only, fuzzy but strict on short words, distinctive defaults, stripped from output. |
 | Clipboard overwritten | Full snapshot, restore only if unchanged, transient flags. |
 | Dictation lost on a failed note save | Clipboard copy plus a permanent backup `.txt`. |
-| Personal data in the project folder | No audio written by default; data folders moved to `~/Library/Application Support/VoiceAssistant/`; redaction; no contact files. Older files in the project folder are left for the user to delete. |
+| Personal data in the project folder | No audio written by default; data folders moved to `~/Library/Application Support/Utter/`; redaction; no contact files. Older files in the project folder are left for the user to delete. |
 | WhatsApp UI changes | Structure-only reads, clear failure messages, parked row selection. |
 | Word list rewrites ordinary words or invents text | Strict rules (6.11): dictionary words, URLs and contractions never changed; short terms exact-only; hint capped in size; echoed hints removed; tests over ordinary sentences; `auto_correct = false` as an off switch. |
 | Python limits native polish and distribution | Strict engine/interface separation allows a Swift shell later. |
@@ -408,7 +427,8 @@ Agreed on 14 November 2026. Each milestone is built on its own branch, measured 
 ### Milestone 3: A real Mac app (v1.0) — in progress
 Decisions (17 November 2026): the name is **Utter**; built for the user's own Mac first (a free personal signing certificate keeps permissions across rebuilds; Apple's paid developer account only if it is shared later); a **full** settings window.
 - **Done in v0.3.10, waiting for the user's live test:** the name Utter; icon-only menu bar with ready / command orb / voice bars / dimmed states and no transcribing state; the app icon (6.1).
-- Next stages: (1) settings, models and a log file move out of the project folder (asked first: the models are 2 GB); (2) first app build in Applications, with its own permissions; (3) first-run permission guide and start at login; (4) the full settings window; (5) final checks (all tests, unchanged accuracy score, live test of the installed app). Running from the terminal keeps working throughout.
+- **Stage 1 built in v0.3.11, waiting for the user's live test:** data folder renamed to Utter, settings file and models in it, log file (6.14). The user chose to move (not copy) the models and to rename the data folder.
+- Next stages: (2) first app build in Applications, with its own permissions; (3) first-run permission guide and start at login; (4) the full settings window; (5) final checks (all tests, unchanged accuracy score, live test of the installed app). Running from the terminal keeps working throughout.
 - Try running the voice detector without PyTorch to shrink the app; ships only if accuracy and tests are unchanged.
 
 ### Ongoing checks
@@ -434,7 +454,7 @@ Decisions (17 November 2026): the name is **Utter**; built for the user's own Ma
 - Dictation: chunked background transcription, one paste at the end, stop phrases at the end of speech only, clipboard save and restore.
 - Notes saved through AppleScript with arguments; failures never lose text.
 - WhatsApp: no contacts file; dual frontmost guard; only Cmd+F and Cmd+V; the user sends messages manually.
-- Privacy by design: no session audio written to disk by default, personal data in `~/Library/Application Support/VoiceAssistant/`, names redacted at the source, audio deleted early for WhatsApp, fake names in all tests.
+- Privacy by design: no session audio written to disk by default, personal data in `~/Library/Application Support/Utter/`, names redacted at the source, audio deleted early for WhatsApp, fake names in all tests.
 - Personal word list for dictation and notes: hinted to Whisper, strict post-correction, stored with personal data, never used for commands.
 - Open any installed app by voice (Milestone 1): strict matching levels, refusal on unknown or ambiguous names, launch by path only, Notes and WhatsApp keep priority.
 - Dictation cleanup (Milestone 2): rules only, dictation and notes only, narrow rules that leave the text as spoken when unsure; each rule can be switched off.

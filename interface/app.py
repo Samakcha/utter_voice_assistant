@@ -164,6 +164,11 @@ class VoiceAssistantApp(rumps.App):
         self.permissions_item = rumps.MenuItem("Check Permissions", callback=self.show_permissions_dialog)
         self.recordings_item = rumps.MenuItem("Open Recordings Folder", callback=self.open_recordings_folder)
         self.word_list_item = rumps.MenuItem("Edit Word List…", callback=self.open_word_list)
+        self.settings_item = rumps.MenuItem("Edit Settings…", callback=self.open_settings_file)
+        self.log_item = rumps.MenuItem("Open Log", callback=self.open_log)
+        # Set by main.py: the user's settings file and the log file
+        self.settings_file: Optional[Path] = None
+        self.log_file: Optional[Path] = None
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.menu = [
@@ -172,6 +177,8 @@ class VoiceAssistantApp(rumps.App):
             self.toggle_item,
             self.permissions_item,
             self.word_list_item,
+            self.settings_item,
+            self.log_item,
             self.recordings_item,
             None,  # Separator
             self.quit_item,
@@ -1456,7 +1463,8 @@ class VoiceAssistantApp(rumps.App):
         )
 
         logger.info(
-            "[Command: %s] %s | Silence: %.2fs | Tx: %.3fs | Rule: %.4fs | Action: %.3fs | Total: %.3fs",
+            "[Command: %s] %s | Silence: %.2fs | Tx: %.3fs | Rule: %.4fs | Action: %.3fs | Total: %.3fs"
+            " | Speech end -> %s: %.3fs",
             match.action_id,
             "OK" if act_res.success else "FAIL",
             silence_wait_sec,
@@ -1464,6 +1472,8 @@ class VoiceAssistantApp(rumps.App):
             rule_match_time_sec,
             act_res.execution_time_sec,
             decision_to_notes_sec,
+            done_label,
+            speech_to_notes_sec,
         )
 
         # Fallback system notification
@@ -1553,6 +1563,28 @@ class VoiceAssistantApp(rumps.App):
             subprocess.run(["open", "-t", str(path)], check=False)
         except Exception as e:
             logger.error("Could not open the word list: %s", e)
+
+    def open_settings_file(self, _sender=None) -> None:
+        """Open the user's settings (config.toml in the data folder) in the default text editor."""
+        path = self.settings_file
+        if path is None or not path.is_file():
+            rumps.alert("Settings Unavailable", "Utter is using its built-in settings; no settings file was found.")
+            return
+        try:
+            subprocess.run(["open", "-t", str(path)], check=False)
+        except Exception as e:
+            logger.error("Could not open the settings file: %s", e)
+
+    def open_log(self, _sender=None) -> None:
+        """Open the log file (timings, what was recognized, errors) in Console."""
+        path = self.log_file
+        if path is None or not path.is_file():
+            rumps.alert("Log Unavailable", "The log file could not be created; messages go to the terminal only.")
+            return
+        try:
+            subprocess.run(["open", str(path)], check=False)
+        except Exception as e:
+            logger.error("Could not open the log: %s", e)
 
     def quit_app(self, _sender=None) -> None:
         """Clean shutdown of engine and interface."""

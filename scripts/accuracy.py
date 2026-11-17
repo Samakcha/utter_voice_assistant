@@ -18,7 +18,7 @@ Usage:
   uv run python scripts/accuracy.py score
 
 Everything (your recordings, the sentence list with your word-list terms, the reports)
-is stored in ~/Library/Application Support/VoiceAssistant/accuracy/, never in the
+is stored in ~/Library/Application Support/Utter/accuracy/, never in the
 project folder. Delete that folder to remove it all. Nothing is ever uploaded.
 """
 
@@ -681,13 +681,13 @@ def write_item_csv(path: Path, results: Sequence[ScoredItem]) -> None:
 
 
 def run_score(folder: Path, compare: bool = True, model: Optional[str] = None) -> int:
-    from engine.config import load_config
+    from engine.config import load_user_config
     from engine.apps import AppInventory
     from engine.transcriber import MLXWhisperTranscriber
     from engine.vocabulary import VocabularyStore
     import dataclasses
 
-    config = load_config()
+    config = load_user_config()
     whisper_cfg = config.whisper if not model else dataclasses.replace(config.whisper, model_size=model)
     manifest = [r for r in read_manifest(folder) if (folder / r.get("file", "")).is_file()]
     if not manifest:
@@ -735,6 +735,11 @@ def run_score(folder: Path, compare: bool = True, model: Optional[str] = None) -
 
 def main(argv: Optional[List[str]] = None) -> int:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")  # never download a model from here
+    # Same one-time move into the Utter data folder as the app, in case this runs first
+    import engine.config as engine_config
+    from engine.data_folder import prepare_data_folder
+    for message in prepare_data_folder(engine_config.data_paths()):
+        print(message)
     parser = argparse.ArgumentParser(description="Measure the assistant's accuracy on your own voice.")
     parser.add_argument("--folder", type=Path, default=DEFAULT_ACCURACY_DIR,
                         help="Where recordings and reports are kept (default: your data folder).")
@@ -746,9 +751,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "record":
-        from engine.config import load_config
+        from engine.config import load_user_config
         from engine.vocabulary import VocabularyStore
-        config = load_config()
+        config = load_user_config()
         terms = VocabularyStore(config.vocabulary.file).terms() if config.vocabulary.file else []
         try:
             return run_record(args.folder, terms)

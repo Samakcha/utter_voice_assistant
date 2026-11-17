@@ -39,13 +39,13 @@ def test_config_loading():
         assert data_dir.is_absolute()
         assert "~" not in str(data_dir)
         assert project_root not in data_dir.parents, f"{data_dir} is inside the project folder"
-        assert "Library/Application Support/VoiceAssistant" in str(data_dir)
+        assert "Library/Application Support/Utter" in str(data_dir)
 
     # Personal word list: on by default, stored with the user's other data
     assert config.vocabulary.file is not None
     assert config.vocabulary.file.is_absolute()
     assert project_root not in config.vocabulary.file.parents
-    assert str(config.vocabulary.file).endswith("Library/Application Support/VoiceAssistant/vocabulary.txt")
+    assert str(config.vocabulary.file).endswith("Library/Application Support/Utter/vocabulary.txt")
     assert config.vocabulary.max_prompt_terms == 50
     assert config.vocabulary.auto_correct is True
 

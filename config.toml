@@ -1,4 +1,9 @@
 # Utter configuration (macOS Apple Silicon)
+#
+# These are the settings Utter ships with. On first start they are copied to
+#   ~/Library/Application Support/Utter/config.toml
+# and Utter reads THAT copy from then on: edit that file to change your settings
+# (restart Utter afterwards). Editing this project file only changes the defaults.
 # All tunable parameters (hotkeys, silence timeouts, thresholds, paths) are defined here.
 
 [hotkeys]
@@ -73,13 +78,13 @@ max_gain_db = 20.0
 [storage]
 # Where session recordings go, used only when [privacy] keep_recordings = true.
 # Kept outside the project folder so personal audio isn't next to the code.
-recordings_dir = "~/Library/Application Support/VoiceAssistant/recordings"
+recordings_dir = "~/Library/Application Support/Utter/recordings"
 
 # Maximum number of recent recording files to keep in recordings_dir before cleaning older files
 max_recordings_kept = 20
 
 # Where note text is backed up if saving to Notes fails (never pruned)
-note_backups_dir = "~/Library/Application Support/VoiceAssistant/note_backups"
+note_backups_dir = "~/Library/Application Support/Utter/note_backups"
 
 [whisper]
 # Whisper model size or variant: "tiny", "base", "small", "medium", "large-v3-turbo", or English-only ".en" variants
@@ -94,8 +99,9 @@ language = "en"
 # Optional initial prompt to bias vocabulary/names (default empty to avoid hallucination)
 initial_prompt = ""
 
-# Local directory where downloaded Whisper model weights are stored
-models_dir = "./models"
+# Where the Whisper model weights are stored (moved here from the project's ./models on first
+# start; ./models in the project folder is still searched if a model is missing here)
+models_dir = "~/Library/Application Support/Utter/models"
 
 [dictation]
 # Duration of silence pause (in seconds) during active dictation that triggers background chunk transcription
@@ -164,7 +170,7 @@ keep_recordings = false
 # mishearings are fixed afterwards ("Rahool" -> "Rahul"). Edit it from the menu bar:
 # "Edit Word List...". Kept outside the project folder because names are personal data.
 enabled = true
-file = "~/Library/Application Support/VoiceAssistant/vocabulary.txt"
+file = "~/Library/Application Support/Utter/vocabulary.txt"
 
 # Most terms hinted to Whisper per chunk. The hint is also capped at ~400 characters,
 # because long hints can make Whisper invent words.

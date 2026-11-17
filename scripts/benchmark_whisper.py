@@ -281,7 +281,9 @@ def main() -> None:
     parser.add_argument("--expected", type=Path, default=None, help="Optional CSV file with filename and expected text.")
     parser.add_argument("--prompt", type=str, default=None, help="Initial prompt to test.")
     parser.add_argument("--compare-prompts", action="store_true", help="Compare with and without prompt.")
-    parser.add_argument("--models-dir", type=Path, default=Path("./models"), help="Directory for local model weights.")
+    from engine.config import load_user_config
+    parser.add_argument("--models-dir", type=Path, default=load_user_config().whisper.models_dir,
+                        help="Directory for local model weights (default: the models_dir in your settings).")
     parser.add_argument("-y", "--yes", action="store_true", help="Auto-confirm model downloads without prompting.")
 
     # Normalization options

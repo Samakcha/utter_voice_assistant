@@ -78,13 +78,25 @@ def resolve_local_model(
     is present, returns (None, model_size) so the caller can report it clearly
     instead of letting mlx_whisper fetch weights from the network at runtime.
     """
-    primary = resolve_model_path(model_size, models_dir)
-    if _is_local_dir(primary):
+    from .config import LEGACY_MODELS_DIR
+
+    # The data folder first; the project's old ./models too, until the models are moved
+    search = [models_dir] + ([LEGACY_MODELS_DIR] if LEGACY_MODELS_DIR != models_dir else [])
+
+    def _find(size: str) -> Optional[str]:
+        for folder in search:
+            path = resolve_model_path(size, folder)
+            if _is_local_dir(path):
+                return path
+        return None
+
+    primary = _find(model_size)
+    if primary:
         return primary, model_size
 
     if fallback_size and fallback_size.lower() != model_size.lower():
-        fallback = resolve_model_path(fallback_size, models_dir)
-        if _is_local_dir(fallback):
+        fallback = _find(fallback_size)
+        if fallback:
             logger.warning(
                 "Whisper model '%s' is not downloaded in %s. Using '%s' instead. "
                 "Download it with scripts/benchmark_whisper.py --models %s.",

@@ -384,5 +384,5 @@ def test_report_for_no_recordings():
 
 def test_default_folder_is_in_the_user_data_folder_not_the_project():
     project = Path(acc.__file__).resolve().parent.parent
-    assert "Library/Application Support/VoiceAssistant/accuracy" in str(acc.DEFAULT_ACCURACY_DIR)
+    assert "Library/Application Support/Utter/accuracy" in str(acc.DEFAULT_ACCURACY_DIR)
     assert project not in acc.DEFAULT_ACCURACY_DIR.parents

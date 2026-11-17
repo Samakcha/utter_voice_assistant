@@ -42,8 +42,45 @@ class VADConfig:
     min_speech_chunks: int
 
 
-# Per-user data lives outside the project folder, in the standard macOS location.
-DEFAULT_DATA_DIR = Path("~/Library/Application Support/VoiceAssistant")
+# Per-user data lives outside the project folder, in the standard macOS locations.
+DEFAULT_DATA_DIR = Path("~/Library/Application Support/Utter")
+# Before the app was named Utter; renamed to DEFAULT_DATA_DIR on first start (data_folder.py)
+LEGACY_DATA_DIR = Path("~/Library/Application Support/VoiceAssistant")
+DEFAULT_LOG_DIR = Path("~/Library/Logs/Utter")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# The settings that ship with Utter. The user's own copy is <data folder>/config.toml.
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.toml"
+USER_CONFIG_NAME = "config.toml"
+# Where models were kept before they moved into the data folder (still searched as a fallback)
+LEGACY_MODELS_DIR = PROJECT_ROOT / "models"
+
+
+@dataclass(frozen=True)
+class DataPaths:
+    """Every place Utter keeps things outside the app itself (tests point these at tmp_path)."""
+    data_dir: Path
+    legacy_data_dir: Path
+    log_dir: Path
+    legacy_models_dir: Path
+    default_config: Path
+
+    @property
+    def user_config(self) -> Path:
+        return self.data_dir / USER_CONFIG_NAME
+
+    @property
+    def models_dir(self) -> Path:
+        return self.data_dir / "models"
+
+
+def data_paths() -> DataPaths:
+    return DataPaths(
+        data_dir=DEFAULT_DATA_DIR.expanduser(),
+        legacy_data_dir=LEGACY_DATA_DIR.expanduser(),
+        log_dir=DEFAULT_LOG_DIR.expanduser(),
+        legacy_models_dir=LEGACY_MODELS_DIR,
+        default_config=DEFAULT_CONFIG_PATH,
+    )
 
 
 def _resolve_dir(value: str, project_root: Path) -> Path:
@@ -150,11 +187,16 @@ class AppConfig:
     cleanup: CleanupConfig = CleanupConfig()
 
 
+def load_user_config(paths: Optional[DataPaths] = None) -> AppConfig:
+    """The user's settings (<data folder>/config.toml), or the shipped defaults if there are none yet."""
+    paths = paths or data_paths()
+    return load_config(paths.user_config if paths.user_config.is_file() else paths.default_config)
+
+
 def load_config(config_path: Optional[Path] = None) -> AppConfig:
-    """Load and parse the configuration from config.toml."""
+    """Load and parse a config.toml (default: the settings that ship with Utter)."""
     if config_path is None:
-        # Default to config.toml in project root
-        config_path = Path(__file__).resolve().parent.parent / "config.toml"
+        config_path = DEFAULT_CONFIG_PATH
 
     if not config_path.is_file():
         raise FileNotFoundError(f"Config file not found at: {config_path}")
@@ -173,9 +215,7 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
     )
 
     whisper_data = data.get("whisper", {})
-    models_dir = Path(whisper_data.get("models_dir", "./models"))
-    if not models_dir.is_absolute():
-        models_dir = (project_root / models_dir).resolve()
+    models_dir = _resolve_dir(str(whisper_data.get("models_dir", DEFAULT_DATA_DIR / "models")), project_root)
 
     norm_data = data.get("normalization", {})
     normalization = NormalizationConfig(

@@ -4,15 +4,20 @@ Runs local menu bar app with global hotkeys, Silero VAD, and MLX Whisper transcr
 """
 
 import logging
+from logging.handlers import RotatingFileHandler
 import os
+from pathlib import Path
 import platform
 import sys
+from typing import Optional
 
 # The app runs fully offline: never let Hugging Face fetch model weights at runtime.
 # Models are downloaded deliberately with scripts/benchmark_whisper.py, which runs separately.
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-from engine import AudioCapture, MLXWhisperTranscriber, SessionManager, load_config
+from engine import AudioCapture, MLXWhisperTranscriber, SessionManager
+import engine.config as engine_config
+from engine.data_folder import prepare_data_folder
 from interface import VoiceAssistantApp, format_permissions_report, get_all_permissions
 
 logging.basicConfig(
@@ -22,6 +27,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger("voice_assistant")
 
+LOG_FILE_NAME = "utter.log"
+LOG_MAX_BYTES = 1_000_000  # about a week of normal use; three older files are kept
+LOG_BACKUPS = 3
+
+
+def setup_file_logging(log_dir: Path) -> Optional[Path]:
+    """Also write log messages (timings, errors; never dictated text) to <log_dir>/utter.log."""
+    path = log_dir / LOG_FILE_NAME
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if isinstance(handler, RotatingFileHandler) and Path(handler.baseFilename) == path:
+            return path  # already set up (main() called twice in one process)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(path, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8")
+    except OSError as e:
+        logger.warning("Could not create the log file in %s: %s", log_dir, e)
+        return None
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                                           datefmt="%Y-%m-%d %H:%M:%S"))
+    handler.setLevel(logging.INFO)
+    root.addHandler(handler)
+    if root.getEffectiveLevel() > logging.INFO:
+        root.setLevel(logging.INFO)  # timings are INFO messages
+    return path
+
 
 def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     # 0. Ensure NSApplication is initialized on macOS Main Thread first
@@ -29,7 +60,11 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     import AppKit
     _ = AppKit.NSApplication.sharedApplication()
 
-    # 1. Architecture and Environment Verification
+    # 1. Data folder, settings file and log file
+    paths = engine_config.data_paths()
+    log_file = setup_file_logging(paths.log_dir)
+
+    # Architecture and Environment Verification
     arch = platform.machine()
     python_ver = sys.version.split()[0]
     executable = sys.executable
@@ -41,9 +76,13 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     if arch != "arm64":
         logger.warning("Expected native arm64 architecture, but running on %s.", arch)
 
-    # 2. Load Configuration
-    config = load_config()
-    logger.info("Configuration loaded from config.toml.")
+    # 2. Load Configuration (after the one-time move into the Utter data folder)
+    for message in prepare_data_folder(paths):
+        logger.info("[Data folder] %s", message)
+    config = engine_config.load_user_config(paths)
+    settings_file = paths.user_config if paths.user_config.is_file() else None
+    logger.info("Settings: %s", settings_file or f"{paths.default_config} (built-in defaults)")
+    logger.info("Log file: %s", log_file or "none (terminal only)")
     logger.info("Audio input device: %s", AudioCapture.get_input_device_name())
     logger.info(
         "Hotkeys: Command='%s', Dictation='%s' (%s), Cancel='%s'",
@@ -88,6 +127,8 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     )
     app = VoiceAssistantApp(config=config, session_manager=session_manager, transcriber=transcriber)
     transcriber.on_ready = app.on_model_ready
+    app.settings_file = settings_file
+    app.log_file = log_file
 
     # 5. Start Global Hotkeys and Run App
     app.start_listeners()
