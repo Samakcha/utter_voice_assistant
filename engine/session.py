@@ -64,6 +64,9 @@ class SessionManager:
         self._session_start_time: float = 0.0
         self._last_speech_time: Optional[float] = None
         self._audio_chunks: List[np.ndarray] = []
+        # Loudness of the latest microphone frame (RMS dBFS), for the menu bar's voice bars.
+        # Written by the audio thread, read by the UI; a plain float, so no lock is needed.
+        self._input_rms_dbfs: float = -100.0
 
         # Command early-finish state: pause_id counts pauses; in_pause is True only while
         # the user has stayed silent since the latest reported pause.
@@ -87,6 +90,11 @@ class SessionManager:
         """True if a session is currently active and capturing audio."""
         with self._lock:
             return self._is_active
+
+    @property
+    def input_rms_dbfs(self) -> float:
+        """Loudness of the latest microphone frame (-100 when idle)."""
+        return self._input_rms_dbfs if self._is_active else -100.0
 
     @property
     def current_mode(self) -> Optional[SessionMode]:
@@ -142,6 +150,7 @@ class SessionManager:
             self._dictation_chunk_active = False
             self._dictation_trailing_silence_frames = 0
             self._dictation_pre_speech_ring_buffer.clear()
+            self._input_rms_dbfs = -100.0
 
             # Reset VAD internal states
             self._vad.reset()
@@ -423,6 +432,10 @@ class SessionManager:
 
             self._audio_chunks.append(chunk)
             now = time.monotonic()
+            try:
+                self._input_rms_dbfs = compute_audio_levels(chunk)[1]
+            except Exception:
+                self._input_rms_dbfs = -100.0
 
             try:
                 is_speech, prob = self._vad.is_speech(chunk)

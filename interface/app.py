@@ -1,4 +1,4 @@
-"""Menu bar application for Voice Assistant using rumps."""
+"""Utter's menu bar application, using rumps."""
 
 import logging
 from pathlib import Path
@@ -33,6 +33,8 @@ from engine.vocabulary import VocabularyStore, build_whisper_prompt, correct_tex
 from .clipboard import get_general_pasteboard, paste_and_restore
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
 from .key_events import is_hold
+from . import menu_icon
+from .menu_icon import MenuBarIcon
 from .overlay import VoiceAssistantOverlay
 from .permissions import format_permissions_report, get_all_permissions, open_settings_pane
 from .whatsapp_control import (
@@ -60,13 +62,7 @@ class VoiceAssistantApp(rumps.App):
     Strictly separated: engine knows nothing about this class.
     """
 
-    TITLE_LOADING = "⏳ Loading model..."
-    TITLE_IDLE = "🎙️ Voice Assistant"
-    TITLE_COMMAND = "🔴 Listening (Command)..."
-    TITLE_DICTATION = "🔵 Listening (Dictation)..."
-    TITLE_NOTE = "📝 Taking a note..."
-    TITLE_TRANSCRIBING = "⏳ Transcribing..."
-    TITLE_STOPPED = "⚪ [Stopped]"
+    APP_NAME = "Utter"
 
     def __init__(
         self,
@@ -75,8 +71,8 @@ class VoiceAssistantApp(rumps.App):
         transcriber: Optional[BaseTranscriber] = None,
         notes_writer: Optional[BaseNotesWriter] = None,
     ):
-        initial_title = self.TITLE_LOADING if transcriber is not None else self.TITLE_IDLE
-        super().__init__(name="Voice Assistant", title=initial_title, quit_button=None)
+        # Icon only in the menu bar (no text); see interface/menu_icon.py
+        super().__init__(name=self.APP_NAME, title=None, quit_button=None)
 
         self.config = config
         self.session_manager = session_manager
@@ -84,6 +80,16 @@ class VoiceAssistantApp(rumps.App):
         self.notes_writer = notes_writer if notes_writer is not None else AppleScriptNotesWriter()
         self.is_running = True
         self.model_ready = False if transcriber is not None else True
+        self.menu_icon = MenuBarIcon(
+            show=self._show_menu_bar_image,
+            level=lambda: menu_icon.level_from_rms_dbfs(self.session_manager.input_rms_dbfs),
+            make_timer=lambda callback, interval: rumps.Timer(callback, interval),
+        )
+        try:
+            self.menu_icon.set_state(menu_icon.READY if self.model_ready else menu_icon.LOADING)
+        except Exception as e:  # no window server (tests over SSH): text fallback
+            logger.warning("Could not draw the menu bar icon: %s", e)
+            self.title = self.APP_NAME
         self.overlay: Optional[VoiceAssistantOverlay] = None
         try:
             self.overlay = VoiceAssistantOverlay()
@@ -154,7 +160,7 @@ class VoiceAssistantApp(rumps.App):
         # Build menu items
         status_text = "Status: Loading Whisper model..." if not self.model_ready else "Status: Ready (Mic closed)"
         self.status_item = rumps.MenuItem(status_text, callback=None)
-        self.toggle_item = rumps.MenuItem("Stop Assistant", callback=self.toggle_service)
+        self.toggle_item = rumps.MenuItem("Stop Utter", callback=self.toggle_service)
         self.permissions_item = rumps.MenuItem("Check Permissions", callback=self.show_permissions_dialog)
         self.recordings_item = rumps.MenuItem("Open Recordings Folder", callback=self.open_recordings_folder)
         self.word_list_item = rumps.MenuItem("Edit Word List…", callback=self.open_word_list)
@@ -171,17 +177,31 @@ class VoiceAssistantApp(rumps.App):
             self.quit_item,
         ]
 
+    def _show_menu_bar_image(self, image) -> None:
+        """Put a drawn image in the menu bar (rumps keeps it if the bar isn't built yet)."""
+        self._icon_nsimage = image
+        try:
+            self._nsapp.setStatusBarIcon()
+        except AttributeError:
+            pass  # the status bar is created at run(); it picks up _icon_nsimage then
+
+    def _set_menu_state(self, state: str) -> None:
+        try:
+            self.menu_icon.set_state(state)
+        except Exception as e:
+            logger.debug("Menu bar icon update failed: %s", e)
+
     def on_model_ready(self) -> None:
         """Called when transcriber completes loading and warmup on worker thread."""
         self.model_ready = True
 
         def _update_ui():
             if self.is_running and not self.session_manager.is_listening:
-                self.title = self.TITLE_IDLE
+                self._set_menu_state(menu_icon.READY)
                 self.status_item.title = "Status: Ready (Mic closed)"
 
         run_on_main_thread(_update_ui)
-        logger.info("Voice Assistant is ready for voice sessions.")
+        logger.info("Utter is ready for voice sessions.")
 
     def start_listeners(self) -> None:
         """Start hotkey listener (and list the installed apps in the background)."""
@@ -200,8 +220,8 @@ class VoiceAssistantApp(rumps.App):
         self.is_running = not self.is_running
         if self.is_running:
             self.hotkey_manager.enabled = True
-            self.title = self.TITLE_IDLE if self.model_ready else self.TITLE_LOADING
-            self.toggle_item.title = "Stop Assistant"
+            self._set_menu_state(menu_icon.READY if self.model_ready else menu_icon.LOADING)
+            self.toggle_item.title = "Stop Utter"
             self.status_item.title = "Status: Ready (Mic closed)" if self.model_ready else "Status: Loading model..."
             logger.info("Voice assistant resumed.")
         else:
@@ -209,8 +229,8 @@ class VoiceAssistantApp(rumps.App):
             self.hotkey_manager.enabled = False
             if self.session_manager.is_listening:
                 self.session_manager.stop_session(EndReason.STOPPED)
-            self.title = self.TITLE_STOPPED
-            self.toggle_item.title = "Start Assistant"
+            self._set_menu_state(menu_icon.STOPPED)
+            self.toggle_item.title = "Start Utter"
             self.status_item.title = "Status: Stopped (Inactive)"
             logger.info("Voice assistant stopped.")
 
@@ -313,7 +333,7 @@ class VoiceAssistantApp(rumps.App):
                 self.overlay.show_listening(mode.value)
 
             def _update_dictation_ui():
-                self.title = self.TITLE_DICTATION
+                self._set_menu_state(menu_icon.DICTATION)
                 self.status_item.title = "Status: Listening for dictation..."
 
             run_on_main_thread(_update_dictation_ui)
@@ -340,7 +360,7 @@ class VoiceAssistantApp(rumps.App):
                     logger.debug("Could not play ready sound: %s", e)
 
             def _update_note_ui():
-                self.title = self.TITLE_NOTE
+                self._set_menu_state(menu_icon.DICTATION)
                 self.status_item.title = "Status: Taking a note..."
 
             run_on_main_thread(_update_note_ui)
@@ -350,7 +370,7 @@ class VoiceAssistantApp(rumps.App):
                 self.overlay.show_listening(mode.value)
 
             def _update_command_ui():
-                self.title = self.TITLE_COMMAND
+                self._set_menu_state(menu_icon.COMMAND)
                 self.status_item.title = "Status: Listening for command..."
 
             run_on_main_thread(_update_command_ui)
@@ -751,7 +771,7 @@ class VoiceAssistantApp(rumps.App):
                 self.overlay.show_transcribing()
 
             def _set_transcribing_ui():
-                self.title = self.TITLE_TRANSCRIBING
+                self._set_menu_state(menu_icon.READY)  # no transcribing icon
                 self.status_item.title = "Status: Transcribing final dictation..."
 
             run_on_main_thread(_set_transcribing_ui)
@@ -780,7 +800,7 @@ class VoiceAssistantApp(rumps.App):
                 self.overlay.show_transcribing()
 
             def _set_transcribing_note_ui():
-                self.title = self.TITLE_TRANSCRIBING
+                self._set_menu_state(menu_icon.READY)  # no transcribing icon
                 self.status_item.title = "Status: Transcribing final note..."
 
             run_on_main_thread(_set_transcribing_note_ui)
@@ -823,7 +843,7 @@ class VoiceAssistantApp(rumps.App):
             self.overlay.show_transcribing()
 
         def _set_transcribing_ui():
-            self.title = self.TITLE_TRANSCRIBING
+            self._set_menu_state(menu_icon.READY)  # no transcribing icon
             self.status_item.title = "Status: Transcribing audio..."
 
         try:
@@ -1003,7 +1023,7 @@ class VoiceAssistantApp(rumps.App):
             self.overlay.show_saving_note()
 
         def _set_saving_ui():
-            self.title = self.TITLE_TRANSCRIBING
+            self._set_menu_state(menu_icon.READY)  # no transcribing icon
             self.status_item.title = "Status: Saving note to Notes app..."
 
         run_on_main_thread(_set_saving_ui)
@@ -1183,7 +1203,7 @@ class VoiceAssistantApp(rumps.App):
 
             try:
                 rumps.notification(
-                    title="Voice Assistant",
+                    title=self.APP_NAME,
                     subtitle="Command Unrecognized",
                     message=f'Heard: "{log_text}" (Nothing recognized)',
                 )
@@ -1369,7 +1389,7 @@ class VoiceAssistantApp(rumps.App):
                 "WhatsApp Search" if act_res.success else "Command Failed"
             )
             rumps.notification(
-                title="Voice Assistant",
+                title=self.APP_NAME,
                 subtitle=subtitle,
                 message=f'Heard: "{log_text}" → {act_res.message}',
             )
@@ -1453,7 +1473,7 @@ class VoiceAssistantApp(rumps.App):
                 else "Nothing opened" if act_res.error is None else "Command Failed"
             )
             rumps.notification(
-                title="Voice Assistant",
+                title=self.APP_NAME,
                 subtitle=subtitle,
                 message=f'Heard: "{display_text}" → {act_res.message}',
             )
@@ -1471,7 +1491,7 @@ class VoiceAssistantApp(rumps.App):
 
         try:
             rumps.notification(
-                title="Voice Assistant",
+                title=self.APP_NAME,
                 subtitle="Transcription Error",
                 message=str(error),
             )
@@ -1482,10 +1502,10 @@ class VoiceAssistantApp(rumps.App):
         """Helper to reset title and status item to idle."""
         def _update_ui():
             if self.is_running:
-                self.title = self.TITLE_IDLE
+                self._set_menu_state(menu_icon.READY)
                 self.status_item.title = "Status: Ready (Mic closed)"
             else:
-                self.title = self.TITLE_STOPPED
+                self._set_menu_state(menu_icon.STOPPED)
                 self.status_item.title = "Status: Stopped (Inactive)"
 
         try:
@@ -1536,8 +1556,9 @@ class VoiceAssistantApp(rumps.App):
 
     def quit_app(self, _sender=None) -> None:
         """Clean shutdown of engine and interface."""
-        logger.info("Quitting Voice Assistant...")
+        logger.info("Quitting Utter...")
         self.is_running = False
+        self.menu_icon.stop()
         if self.overlay is not None:
             self.overlay.hide()
         self.hotkey_manager.stop()

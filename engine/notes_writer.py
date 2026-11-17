@@ -238,7 +238,7 @@ class AppleScriptNotesWriter(BaseNotesWriter):
         """Map raw AppleScript error codes to clear, actionable user messages."""
         if "-1743" in stderr_text:
             return (
-                "Automation permission denied. Please enable permission for Voice Assistant "
+                "Automation permission denied. Please enable permission for Utter "
                 "in System Settings > Privacy & Security > Automation (under your Terminal or Python app)."
             )
         if "-1728" in stderr_text or "Can’t get application" in stderr_text:

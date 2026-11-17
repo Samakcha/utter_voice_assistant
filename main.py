@@ -1,5 +1,5 @@
 """
-Voice Assistant (macOS Apple Silicon) - Step 2 Entry Point
+Utter (macOS Apple Silicon) - Step 2 Entry Point
 Runs local menu bar app with global hotkeys, Silero VAD, and MLX Whisper transcription.
 """
 
@@ -34,7 +34,7 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     python_ver = sys.version.split()[0]
     executable = sys.executable
 
-    logger.info("Starting Voice Assistant...")
+    logger.info("Starting Utter...")
     logger.info("Python interpreter: %s (%s)", executable, python_ver)
     logger.info("Host architecture: %s (Apple Silicon: %s)", arch, arch == "arm64")
 

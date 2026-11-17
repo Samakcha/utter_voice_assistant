@@ -39,6 +39,10 @@ class VoiceAssistantOverlay:
     whenever a new state is presented.
     """
 
+    # "Transcribing..." and "Saving note..." appear only if the work takes longer than this;
+    # normally the text is pasted (or the note saved) before then, so nothing is shown.
+    SLOW_STATUS_SEC = 1.0
+
     DEFAULT_HEIGHT = 44.0
     MIN_WIDTH = 260.0
     MAX_WIDTH = 780.0
@@ -193,9 +197,26 @@ class VoiceAssistantOverlay:
         icon = "🔴" if mode_name.lower() == "command" else "🔵"
         self._show_content(f"{icon} Listening ({mode_name.capitalize()})...", auto_dismiss_sec=None)
 
+    def _show_if_slow(self, text: str) -> None:
+        """Hide the listening pill now; show `text` only if nothing else is shown within SLOW_STATUS_SEC."""
+        self.hide()
+
+        def _late():
+            with self._timer_lock:
+                if self._dismiss_timer is not timer:
+                    return  # a newer state (result, error, hide) has taken over
+                self._dismiss_timer = None
+            self._show_content(text, auto_dismiss_sec=None)
+
+        with self._timer_lock:
+            timer = threading.Timer(self.SLOW_STATUS_SEC, _late)
+            timer.daemon = True
+            self._dismiss_timer = timer  # any new state or hide() cancels it
+            timer.start()
+
     def show_transcribing(self) -> None:
-        """Display transcribing state."""
-        self._show_content("⏳ Transcribing...", auto_dismiss_sec=None)
+        """Transcribing: shown only when it takes longer than SLOW_STATUS_SEC."""
+        self._show_if_slow("⏳ Transcribing...")
 
     def show_action_start(self, heard_text: str, action_message: str = "Opening Notes...") -> None:
         """Display action starting state."""
@@ -240,8 +261,8 @@ class VoiceAssistantOverlay:
         self._show_content("📝 Taking a note... say 'stop note' to save", auto_dismiss_sec=None)
 
     def show_saving_note(self) -> None:
-        """Display saving note state."""
-        self._show_content("💾 Saving note...", auto_dismiss_sec=None)
+        """Saving a note: shown only when it takes longer than SLOW_STATUS_SEC."""
+        self._show_if_slow("💾 Saving note...")
 
     def show_note_saved(self, word_count: int) -> None:
         """Display note saved state: 'Saved note (N words)'; auto-fades after ~2.0s."""

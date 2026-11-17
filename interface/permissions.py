@@ -130,7 +130,7 @@ def format_permissions_report(permissions: Optional[Dict[str, PermissionItem]] =
     lines.append("⚠️  MISSING macOS PERMISSIONS DETECTED")
     lines.append("=" * 70)
     lines.append(f"Running on: Python ({sys.executable})")
-    lines.append("Please enable the following permissions so the Voice Assistant can operate:")
+    lines.append("Please enable the following permissions so Utter can work:")
     lines.append("")
 
     for item in missing:

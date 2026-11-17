@@ -1,8 +1,8 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
-**Working title:** TBD
-**Status:** v0.3.9 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13).
-**Last updated:** 14 November 2026
+**Product name:** Utter (chosen 17 November 2026)
+**Status:** v0.3.10 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1).
+**Last updated:** 17 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
 
@@ -69,8 +69,15 @@ All hotkeys are handled by **one single keyboard listener** (see section 11 for 
 ## 6. Functional Requirements
 
 ### 6.1 App shell
-- Menu bar app with Start / Stop / Quit, a "Check Permissions" item, "Edit Word List…" (see 6.11), and "Open Recordings Folder" (the folder only fills when `keep_recordings = true`).
-- The microphone is open only during an active session; the menu bar title shows the state (idle, listening, transcribing, loading model).
+- Menu bar app named **Utter**, with Stop Utter / Start Utter / Quit, a "Check Permissions" item, "Edit Word List…" (see 6.11), and "Open Recordings Folder" (the folder only fills when `keep_recordings = true`). The first menu line spells out the status in words.
+- **Icon only in the menu bar, no text** (`interface/menu_icon.py`), drawn in code as a macOS template image, so it turns white or black to match the menu bar like other apps' icons. One fixed size (18 × 16 points) in every state, so neighbouring icons never shift:
+  - **Ready:** a still five-bar waveform, the Utter mark.
+  - **Command mode:** a pulsing orb, slightly larger while you speak.
+  - **Dictation and notes:** five bars that follow the live microphone level (a row of short dashes when silent), redrawn 15 times a second by a main-thread timer that runs only while listening.
+  - **Loading model / stopped:** the waveform, dimmed.
+  - **No "transcribing" icon:** when you stop speaking the icon goes straight back to ready. The overlay shows "Transcribing…" or "Saving note…" only if that takes longer than 1 s (normally the text is already pasted).
+- **App icon:** the same waveform, white on a deep indigo rounded square on Apple's icon grid, drawn by `scripts/make_app_icon.py` into `assets/utter-app-icon.png` (1024 × 1024); used when the app is packaged.
+- The microphone is open only during an active session.
 - A floating **overlay** shows the state and the result of every command (see 6.7).
 - Sessions are finalized on a worker thread (never on the audio callback thread; see lessons learned).
 
@@ -130,7 +137,7 @@ The whole normalized utterance must match a command's grammar: lowercase, punctu
 ### 6.7 Overlay
 - A small floating, **non-activating** panel near the top center of the screen: it never takes keyboard focus, appears over full-screen apps and all Spaces, and fades out on its own.
 - All AppKit work runs on the main thread only; each new state cancels any pending fade-out, so back-to-back commands are never hidden by an old timer.
-- States include: Listening (Command / Dictation / Note), Transcribing, Heard "..." with the action taken, Nothing recognized, Inserted N words, Saved note, WhatsApp states and error messages. The macOS notification and the menu bar title remain as fallbacks.
+- States include: Listening (Command / Dictation / Note), Transcribing (only when slower than 1 s), Heard "..." with the action taken, Nothing recognized, Inserted N words, Saved note, WhatsApp states and error messages. The macOS notification and the status line in the menu remain as fallbacks.
 - Esc hides the overlay immediately.
 
 ### 6.8 Voice notes (`take_note`)
@@ -230,7 +237,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 757 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 778 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -261,10 +268,12 @@ voice-assistant/
   engine/                      audio_capture, vad, session, transcriber, audio_utils, commands,
                                actions, apps, stop_phrases, chunk_joiner, cleanup, insertion, notes_writer, vocabulary,
                                config, models
-  interface/                   app, hotkeys, key_events, permissions, overlay, clipboard, whatsapp_ax, whatsapp_control
-  scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, eval_rules, test_notes_write,
+  interface/                   app, menu_icon, hotkeys, key_events, permissions, overlay, clipboard, whatsapp_ax,
+                               whatsapp_control
+  assets/                      utter-app-icon.png (drawn by scripts/make_app_icon.py)
+  scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       757 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       778 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
 
 ~/Library/Application Support/VoiceAssistant/
@@ -305,7 +314,7 @@ voice-assistant/
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 757 passing |
+| Automated tests | 778 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -392,14 +401,15 @@ Agreed on 14 November 2026. Each milestone is built on its own branch, measured 
 - Accuracy sentences for app commands added to the recorder, so the result can be scored on the user's voice.
 - Optional, small: WhatsApp search names from the word list (decision pending, see 12.1).
 
-### Milestone 2: Nicer dictation (cleanup) — built in v0.3.9, waiting for the user's recordings and live test
+### Milestone 2: Nicer dictation (cleanup) — done (v0.3.9, tested live by the user on 17 November 2026)
 - Remove filler words ("um", "uh"), accidental repeats ("the the") and simple self-corrections, with rules only (offline, no LLM) (6.13).
-- Measured before and after on the user's recorded sentences; nothing ships that lowers the score. Result so far: no change on the 65 normal dictation sentences; 13 cleanup sentences to record.
+- Measured before and after on the user's recorded sentences; nothing ships that lowers the score. Result: no change on the 65 normal dictation sentences (99.1% with and without); 10 of 13 cleanup sentences exactly right on the user's voice (8 without cleanup). The 3 misses were Whisper mishearing the correction words themselves ("no wait" as "9.80", "four chairs" as "Poachers", "Email" as "and mail"); with the user's real voice Whisper already drops most "um"s and repeats, so the correction rules do most of the work.
 
-### Milestone 3: A real Mac app (v1.0)
-- A double-clickable app with an icon that starts at login, instead of `uv run` in a terminal.
-- A small settings window (hotkeys, word list), a first-run guide for Microphone and Accessibility permission.
-- Choose the final product name; packaging and code signing.
+### Milestone 3: A real Mac app (v1.0) — in progress
+Decisions (17 November 2026): the name is **Utter**; built for the user's own Mac first (a free personal signing certificate keeps permissions across rebuilds; Apple's paid developer account only if it is shared later); a **full** settings window.
+- **Done in v0.3.10, waiting for the user's live test:** the name Utter; icon-only menu bar with ready / command orb / voice bars / dimmed states and no transcribing state; the app icon (6.1).
+- Next stages: (1) settings, models and a log file move out of the project folder (asked first: the models are 2 GB); (2) first app build in Applications, with its own permissions; (3) first-run permission guide and start at login; (4) the full settings window; (5) final checks (all tests, unchanged accuracy score, live test of the installed app). Running from the terminal keeps working throughout.
+- Try running the voice detector without PyTorch to shrink the app; ships only if accuracy and tests are unchanged.
 
 ### Ongoing checks
 - Re-measure end of speech to action live with `large-v3-turbo` (fixed commands, app launch, WhatsApp search).
@@ -408,7 +418,7 @@ Agreed on 14 November 2026. Each milestone is built on its own branch, measured 
 
 ## 16. Open questions
 
-1. Product name.
+1. ~~Product name.~~ Utter (decided 17 November 2026).
 2. Whether to enable optional debug logging by default (the terminal log proved essential for diagnosis, so logging currently stays on).
 3. Final numeric success criteria, if formal measurement is done.
 4. Which parked feature comes first.

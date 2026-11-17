@@ -1,4 +1,4 @@
-# Voice Assistant Configuration (macOS Apple Silicon)
+# Utter configuration (macOS Apple Silicon)
 # All tunable parameters (hotkeys, silence timeouts, thresholds, paths) are defined here.
 
 [hotkeys]
