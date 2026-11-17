@@ -218,33 +218,106 @@ def test_session_reports_microphone_loudness_only_while_listening(app):
     assert sm.input_rms_dbfs == -100.0  # idle: no stale level
 
 
-# ---- "Transcribing..." only when slow ----------------------------------------------------
+# ---- The pop-up: a moving sound wave while listening, nothing afterwards ------------------
 
 def _overlay_spy(monkeypatch):
-    import time
     from interface.overlay import VoiceAssistantOverlay
     overlay = VoiceAssistantOverlay()
-    overlay.SLOW_STATUS_SEC = 0.05
-    shown = []
-    original = overlay._show_content
-    monkeypatch.setattr(overlay, "_show_content",
-                        lambda text, auto_dismiss_sec=None: (shown.append(text), original(text, auto_dismiss_sec)))
-    return overlay, shown, time
+    events = []
+    monkeypatch.setattr(overlay, "_show_content", lambda text, auto_dismiss_sec=None: events.append(("text", text)))
+    monkeypatch.setattr(overlay, "_show_wave", lambda: events.append(("wave",)))
+    original_hide = overlay.hide
+    monkeypatch.setattr(overlay, "hide", lambda: (events.append(("hide",)), original_hide()))
+    return overlay, events
 
 
-def test_transcribing_message_appears_only_when_it_is_slow(monkeypatch):
-    overlay, shown, time = _overlay_spy(monkeypatch)
-    overlay.show_transcribing()
-    assert shown == []  # not straight away
-    time.sleep(0.2)
-    assert shown == ["⏳ Transcribing..."]  # still busy after the delay: now it says so
+def test_listening_shows_only_the_wave_never_text(monkeypatch):
+    overlay, events = _overlay_spy(monkeypatch)
+    overlay.show_listening("command")
+    overlay.show_listening("dictation")
+    overlay.show_note_listening()
+    assert events == [("wave",), ("wave",), ("wave",)]
 
 
-def test_fast_result_replaces_the_pending_transcribing_message(monkeypatch):
-    overlay, shown, time = _overlay_spy(monkeypatch)
-    overlay.show_transcribing()
-    overlay.show_dictation_inserted(4)
-    overlay.show_saving_note()
-    overlay.hide()
-    time.sleep(0.2)
-    assert shown == ["✍️ Inserted 4 words"]  # the pending "Transcribing" / "Saving" never showed
+@pytest.mark.parametrize("call", [
+    lambda o: o.show_transcribing(),
+    lambda o: o.show_dictation_inserted(4),
+    lambda o: o.show_action_start("open notes", "Opening Notes..."),
+    lambda o: o.show_action_success("open notes", "Opening Notes"),
+    lambda o: o.show_saving_note(),
+    lambda o: o.show_note_saved(12),
+    lambda o: o.show_whatsapp_opening(),
+    lambda o: o.show_whatsapp_ready(),
+    lambda o: o.show_whatsapp_searching("Alex Test"),
+])
+def test_progress_and_success_messages_are_gone(monkeypatch, call):
+    overlay, events = _overlay_spy(monkeypatch)
+    call(overlay)
+    assert events == [("hide",)]  # the pop-up just goes away
+
+
+@pytest.mark.parametrize("call, expected", [
+    (lambda o: o.show_not_run('No app called "door"'), 'No app called "door"'),
+    (lambda o: o.show_unrecognized("open the door"), "Nothing recognized"),
+    (lambda o: o.show_error("boom"), "Action failed"),
+    (lambda o: o.show_note_failed_copied("permission denied"), "Text copied to clipboard"),
+    (lambda o: o.show_whatsapp_not_front(), "WhatsApp isn't in front"),
+])
+def test_problems_are_still_shown_as_text(monkeypatch, call, expected):
+    overlay, events = _overlay_spy(monkeypatch)
+    call(overlay)
+    assert len(events) == 1 and events[0][0] == "text" and expected in events[0][1]
+
+
+def test_wave_scrolls_with_the_voice_and_rests_as_dashes():
+    import random
+    from interface import waveform as wf
+    wave = wf.WaveState(rng=random.Random(7))
+    quiet = wave.step(0.0)
+    assert len(quiet) == wf.BAR_COUNT and max(quiet) == 0.0
+    for _ in range(wf.BAR_COUNT):
+        loud = wave.step(1.0)
+    assert min(loud) > 0.05 and max(loud) <= 1.0
+    middle, end = loud[wf.BAR_COUNT // 2], loud[0]
+    assert wf.taper(wf.BAR_COUNT // 2) > wf.taper(0)  # tall in the middle, short at the ends
+    newest = wave.history[-1]
+    wave.step(1.0)
+    assert wave.history[-2] == newest  # scrolls: each frame pushes the wave one bar left
+    for _ in range(60):
+        rest = wave.step(0.0)
+    assert max(rest) < 0.01  # falls back to dashes when you stop talking
+    rects = wf.bar_rects(rest)
+    assert all(r[3] == wf.MIN_BAR for r in rects)
+    for x, y, w, h in wf.bar_rects(loud):
+        assert x >= 0 and y >= 0 and x + w <= wf.WIDTH + 1e-9 and y + h <= wf.HEIGHT + 1e-9
+
+
+def test_wave_view_draws_without_errors():
+    import AppKit
+    from interface import waveform as wf
+    from interface.overlay import UtterWaveView
+    view = UtterWaveView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, wf.WIDTH, wf.HEIGHT))
+    view.heights = [0.5] * wf.BAR_COUNT
+    image = AppKit.NSImage.alloc().initWithSize_((wf.WIDTH, wf.HEIGHT))
+    image.lockFocus()
+    try:
+        view.drawRect_(view.bounds())
+    finally:
+        image.unlockFocus()
+
+
+def test_app_feeds_the_microphone_level_to_the_wave(tmp_path):
+    import dataclasses
+    from engine.config import VocabularyConfig, load_config
+    from engine.session import SessionManager
+    from interface.app import VoiceAssistantApp
+    config = dataclasses.replace(load_config(), vocabulary=VocabularyConfig(file=None))
+    a = VoiceAssistantApp(config=config, session_manager=SessionManager(config=config))
+    try:
+        assert a.overlay is not None and a.overlay.level_source() == 0.0  # idle: silent
+        a.session_manager._is_active = True
+        a.session_manager._input_rms_dbfs = -25.0
+        assert a.overlay.level_source() == 1.0
+        a.session_manager._is_active = False
+    finally:
+        a.menu_icon.stop()

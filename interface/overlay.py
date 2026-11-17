@@ -7,8 +7,11 @@ All AppKit operations run on the main UI thread.
 
 import logging
 import threading
-from typing import Optional
+from typing import Callable, Optional
 import AppKit
+import objc
+
+from . import waveform
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +34,34 @@ class NonActivatingPanel(AppKit.NSPanel):
         return False
 
 
+class UtterWaveView(AppKit.NSView):
+    """Draws the sound wave bars (white, rounded) from `heights` (0..1 each)."""
+
+    def initWithFrame_(self, frame):
+        self = objc.super(UtterWaveView, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self.heights = [0.0] * waveform.BAR_COUNT
+        return self
+
+    def drawRect_(self, rect):
+        size = self.bounds().size
+        AppKit.NSColor.colorWithWhite_alpha_(1.0, 0.95).setFill()
+        for x, y, w, h in waveform.bar_rects(self.heights, size.width, size.height):
+            AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                ((x, y), (w, h)), w / 2.0, w / 2.0
+            ).fill()
+
+
 class VoiceAssistantOverlay:
     """
     Manages the floating HUD overlay pill at top center of the screen.
-    Handles listening, transcribing, recognized action, and error states.
+    While Utter listens it shows only a moving sound wave (no text). Afterwards it stays
+    hidden (no "Transcribing" / "Inserted" / "Heard" messages); only problems that need the
+    user's attention are shown as text (unknown app, nothing recognized, note not saved, ...).
     Fades out automatically after final states, and cancels pending timers
     whenever a new state is presented.
     """
-
-    # "Transcribing..." and "Saving note..." appear only if the work takes longer than this;
-    # normally the text is pasted (or the note saved) before then, so nothing is shown.
-    SLOW_STATUS_SEC = 1.0
 
     DEFAULT_HEIGHT = 44.0
     MIN_WIDTH = 260.0
@@ -55,6 +75,11 @@ class VoiceAssistantOverlay:
         self._dismiss_timer: Optional[threading.Timer] = None
         self._timer_lock = threading.Lock()
         self._initialized = False
+        self.wave_view = None
+        self._wave = waveform.WaveState()
+        self._wave_timer = None
+        # Microphone loudness 0..1 for the wave; set by the app (session_manager's level)
+        self.level_source: Callable[[], float] = lambda: 0.0
 
         # Build overlay panel on the main thread
         run_on_main_thread(self._init_ui)
@@ -101,6 +126,13 @@ class VoiceAssistantOverlay:
             self.label.setAlignment_(AppKit.NSTextAlignmentCenter)
 
             self.effect_view.addSubview_(self.label)
+
+            # The sound wave shown while listening (hidden while a message is shown)
+            self.wave_view = UtterWaveView.alloc().initWithFrame_(
+                AppKit.NSMakeRect(0, 0, waveform.WIDTH, waveform.HEIGHT)
+            )
+            self.wave_view.setHidden_(True)
+            self.effect_view.addSubview_(self.wave_view)
             self.panel.setContentView_(self.effect_view)
             self._initialized = True
         except Exception as e:
@@ -123,6 +155,9 @@ class VoiceAssistantOverlay:
                 return
 
             try:
+                self._stop_wave()
+                self.wave_view.setHidden_(True)
+                self.label.setHidden_(False)
                 # Cancel any ongoing animator transitions and restore full opacity
                 self.panel.setAlphaValue_(1.0)
                 self.label.setStringValue_(text)
@@ -192,45 +227,99 @@ class VoiceAssistantOverlay:
 
         run_on_main_thread(_fade)
 
+    # ---- While listening: the moving sound wave ---------------------------------------------
+
     def show_listening(self, mode_name: str = "Command") -> None:
-        """Display listening state."""
-        icon = "🔴" if mode_name.lower() == "command" else "🔵"
-        self._show_content(f"{icon} Listening ({mode_name.capitalize()})...", auto_dismiss_sec=None)
+        """Command, dictation or note: the same moving sound wave, no text."""
+        self._show_wave()
 
-    def _show_if_slow(self, text: str) -> None:
-        """Hide the listening pill now; show `text` only if nothing else is shown within SLOW_STATUS_SEC."""
-        self.hide()
+    def show_note_listening(self) -> None:
+        self._show_wave()
 
-        def _late():
-            with self._timer_lock:
-                if self._dismiss_timer is not timer:
-                    return  # a newer state (result, error, hide) has taken over
-                self._dismiss_timer = None
-            self._show_content(text, auto_dismiss_sec=None)
+    def _show_wave(self) -> None:
+        self._cancel_dismiss_timer()
 
-        with self._timer_lock:
-            timer = threading.Timer(self.SLOW_STATUS_SEC, _late)
-            timer.daemon = True
-            self._dismiss_timer = timer  # any new state or hide() cancels it
-            timer.start()
+        def _update():
+            if self.panel is None or not self._initialized or self.wave_view is None:
+                return
+            try:
+                self.panel.setAlphaValue_(1.0)
+                self.label.setHidden_(True)
+                self._wave.reset()
+                self.wave_view.heights = self._wave.heights()
+                self.wave_view.setHidden_(False)
+                self._place(waveform.WIDTH, waveform.HEIGHT)
+                self.wave_view.setFrame_(AppKit.NSMakeRect(0, 0, waveform.WIDTH, waveform.HEIGHT))
+                self.wave_view.setNeedsDisplay_(True)
+                self.panel.orderFrontRegardless()
+                self._start_wave()
+            except Exception as e:
+                logger.error("Error showing the sound wave: %s", e, exc_info=True)
+
+        run_on_main_thread(_update)
+
+    def _place(self, width: float, height: float) -> None:
+        """Size the pill and put it at the top centre of the main screen (main thread)."""
+        screen = AppKit.NSScreen.mainScreen() or AppKit.NSScreen.screens()[0]
+        frame = screen.visibleFrame()
+        x = frame.origin.x + (frame.size.width - width) / 2.0
+        y = frame.origin.y + frame.size.height - height - 35.0
+        self.panel.setFrame_display_(AppKit.NSMakeRect(x, y, width, height), True)
+        self.effect_view.setFrame_(AppKit.NSMakeRect(0, 0, width, height))
+        self.effect_view.layer().setCornerRadius_(height / 2.0)
+
+    def _wave_tick(self, _timer=None) -> None:
+        try:
+            level = float(self.level_source())
+        except Exception:
+            level = 0.0
+        if self.wave_view is not None:
+            self.wave_view.heights = self._wave.step(level)
+            self.wave_view.setNeedsDisplay_(True)
+
+    def _start_wave(self) -> None:
+        """Redraw ~24 times a second (main thread); also while a menu is open."""
+        if self._wave_timer is None:
+            self._wave_timer = AppKit.NSTimer.timerWithTimeInterval_repeats_block_(
+                1.0 / waveform.FRAMES_PER_SEC, True, self._wave_tick
+            )
+            AppKit.NSRunLoop.mainRunLoop().addTimer_forMode_(self._wave_timer, AppKit.NSRunLoopCommonModes)
+
+    def _stop_wave(self) -> None:
+        if self._wave_timer is not None:
+            self._wave_timer.invalidate()
+            self._wave_timer = None
+
+    # ---- No progress or success messages: the pop-up just goes away ------------------------
 
     def show_transcribing(self) -> None:
-        """Transcribing: shown only when it takes longer than SLOW_STATUS_SEC."""
-        self._show_if_slow("⏳ Transcribing...")
+        self.hide()
 
-    def show_action_start(self, heard_text: str, action_message: str = "Opening Notes...") -> None:
-        """Display action starting state."""
-        clean_heard = heard_text.strip().replace("\n", " ")
-        if len(clean_heard) > 28:
-            clean_heard = clean_heard[:25] + "..."
-        self._show_content(f'Heard: "{clean_heard}" → {action_message}', auto_dismiss_sec=None)
+    def show_action_start(self, heard_text: str = "", action_message: str = "") -> None:
+        self.hide()
 
-    def show_action_success(self, heard_text: str, action_label: str = "Opening Notes") -> None:
-        """Display recognized and successfully initiated action; auto-fades after ~2.5s."""
-        clean_heard = heard_text.strip().replace("\n", " ")
-        if len(clean_heard) > 28:
-            clean_heard = clean_heard[:25] + "..."
-        self._show_content(f'Heard: "{clean_heard}" → {action_label}', auto_dismiss_sec=2.5)
+    def show_action_success(self, heard_text: str = "", action_label: str = "") -> None:
+        self.hide()
+
+    def show_dictation_inserted(self, word_count: int = 0) -> None:
+        self.hide()
+
+    def show_saving_note(self) -> None:
+        self.hide()
+
+    def show_note_saved(self, word_count: int = 0) -> None:
+        self.hide()
+
+    def show_whatsapp_opening(self) -> None:
+        self.hide()
+
+    def show_whatsapp_ready(self) -> None:
+        self.hide()
+
+    def show_whatsapp_searching(self, name: str = "") -> None:
+        self.hide()
+
+    # ---- Problems that need attention: shown as text ----------------------------------------
 
     def show_unrecognized(self, heard_text: str) -> None:
         """Display unrecognized utterance feedback; auto-fades after ~2.5s."""
@@ -247,27 +336,9 @@ class VoiceAssistantOverlay:
         """Display action failure or error state; auto-fades after ~2.5s."""
         self._show_content(f"⚠️ Action failed: {message}", auto_dismiss_sec=2.5)
 
-    def show_dictation_inserted(self, word_count: int) -> None:
-        """Display dictation completion: 'Inserted N words'; auto-fades after ~2.0s."""
-        noun = "word" if word_count == 1 else "words"
-        self._show_content(f"✍️ Inserted {word_count} {noun}", auto_dismiss_sec=2.0)
-
     def show_dictation_empty(self) -> None:
         """Display dictation empty feedback: 'Nothing to insert'; auto-fades after ~2.0s."""
         self._show_content("Nothing to insert", auto_dismiss_sec=2.0)
-
-    def show_note_listening(self) -> None:
-        """Display note recording state."""
-        self._show_content("📝 Taking a note... say 'stop note' to save", auto_dismiss_sec=None)
-
-    def show_saving_note(self) -> None:
-        """Saving a note: shown only when it takes longer than SLOW_STATUS_SEC."""
-        self._show_if_slow("💾 Saving note...")
-
-    def show_note_saved(self, word_count: int) -> None:
-        """Display note saved state: 'Saved note (N words)'; auto-fades after ~2.0s."""
-        noun = "word" if word_count == 1 else "words"
-        self._show_content(f"✅ Saved note ({word_count} {noun})", auto_dismiss_sec=2.0)
 
     def show_note_empty(self) -> None:
         """Display empty note feedback: 'Nothing to save'; auto-fades after ~2.0s."""
@@ -276,18 +347,6 @@ class VoiceAssistantOverlay:
     def show_note_failed_copied(self, reason: str) -> None:
         """Display failure message: 'Couldn't save note: <reason>. Text copied to clipboard.'; auto-fades after 3.5s."""
         self._show_content(f"⚠️ Couldn't save note: {reason}. Text copied to clipboard.", auto_dismiss_sec=3.5)
-
-    def show_whatsapp_opening(self) -> None:
-        """Display opening WhatsApp state."""
-        self._show_content("Opening WhatsApp...", auto_dismiss_sec=None)
-
-    def show_whatsapp_ready(self) -> None:
-        """Display WhatsApp ready state; auto-fades after ~2.0s."""
-        self._show_content("✅ WhatsApp ready", auto_dismiss_sec=2.0)
-
-    def show_whatsapp_searching(self, name: str) -> None:
-        """Display searching WhatsApp state."""
-        self._show_content(f"🔍 Searching WhatsApp for {name}...", auto_dismiss_sec=None)
 
     def show_whatsapp_search_success(self, name: Optional[str] = None) -> None:
         """Display guidance message after search paste; stays about 4.0s."""
@@ -327,6 +386,7 @@ class VoiceAssistantOverlay:
         self._cancel_dismiss_timer()
 
         def _do_hide():
+            self._stop_wave()
             if self.panel is not None:
                 self.panel.orderOut_(None)
                 self.panel.setAlphaValue_(1.0)

@@ -100,6 +100,8 @@ class VoiceAssistantApp(rumps.App):
             self.overlay = VoiceAssistantOverlay()
         except Exception as e:
             logger.warning("Could not initialize overlay: %s", e)
+        if self.overlay is not None:  # the pop-up's sound wave follows the same microphone level
+            self.overlay.level_source = lambda: menu_icon.level_from_rms_dbfs(self.session_manager.input_rms_dbfs)
 
         # Validate configured stop phrases at startup
         validate_stop_phrases(config.dictation.stop_phrases)
