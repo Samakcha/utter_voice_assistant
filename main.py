@@ -20,7 +20,7 @@ from engine import AudioCapture, MLXWhisperTranscriber, SessionManager
 import engine.config as engine_config
 from engine.data_folder import prepare_data_folder
 from interface import VoiceAssistantApp, format_permissions_report, get_all_permissions
-from interface.permissions import request_missing_permissions
+from interface.permissions import ASKED_FILE_NAME, ask_missing_once
 
 logging.basicConfig(
     level=logging.INFO,
@@ -186,8 +186,9 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
 
     # As the app, ask macOS for anything missing: its own prompts appear, and Utter is added
     # to the lists in System Settings (the terminal version uses the terminal's permissions)
+    # (each one only once ever: no macOS window on every start)
     if engine_config.running_as_app() and any(not p.granted for p in permissions.values()):
-        request_missing_permissions(permissions)
+        ask_missing_once(permissions, paths.data_dir / ASKED_FILE_NAME)
 
     # Initialize Engine and Interface
     session_manager = SessionManager(config=config)
@@ -197,6 +198,7 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     )
     app = VoiceAssistantApp(config=config, session_manager=session_manager, transcriber=transcriber)
     transcriber.on_ready = app.on_model_ready
+    app.missing_permissions = [p.name for p in permissions.values() if not p.granted]
     app.settings_file = settings_file
     app.log_file = log_file
 

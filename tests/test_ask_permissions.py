@@ -88,7 +88,7 @@ def test_startup_asks_only_when_running_as_the_app(monkeypatch, isolate_data_pat
     import main as main_mod
     import engine.config as engine_config
     asked = []
-    monkeypatch.setattr(main_mod, "request_missing_permissions", lambda p: asked.append(True))
+    monkeypatch.setattr(main_mod, "ask_missing_once", lambda p, record: asked.append(record.name))
     monkeypatch.setattr(main_mod, "get_all_permissions", lambda: _perms())
     monkeypatch.setattr(sys, "argv", ["main.py"])
     monkeypatch.setattr(main_mod, "_instance_lock", None)
@@ -102,7 +102,48 @@ def test_startup_asks_only_when_running_as_the_app(monkeypatch, isolate_data_pat
     monkeypatch.setattr(main_mod, "_instance_lock", None)
     monkeypatch.setattr(engine_config, "running_as_app", lambda: True)
     app = main_mod.main(run_loop=False)
-    assert asked == [True]  # the app asks macOS itself
+    assert asked == ["permissions_asked.json"]  # the app asks macOS itself (once ever)
     app.hotkey_manager.stop()
     app.menu_icon.stop()
     main_mod._instance_lock.close()
+
+
+def test_macos_window_appears_only_on_the_first_start(fake_macos, tmp_path):
+    calls, _ = fake_macos
+    record = tmp_path / "data" / perms.ASKED_FILE_NAME
+    first = perms.ask_missing_once(_perms(mic=True, listen=True), record)
+    assert first == ["Accessibility"] and record.is_file()
+    calls.clear()
+    # Second, third... start: still reported missing by macOS, but no window again
+    for _ in range(3):
+        assert perms.ask_missing_once(_perms(mic=True, listen=True), record) == []
+    assert calls == []
+    # A permission never asked before is still asked once
+    assert perms.ask_missing_once(_perms(mic=True, listen=False), record) == ["Input Monitoring"]
+
+
+def test_a_broken_record_file_just_means_asking_again(fake_macos, tmp_path):
+    record = tmp_path / perms.ASKED_FILE_NAME
+    record.write_text("not json", encoding="utf-8")
+    assert perms.ask_missing_once(_perms(mic=True, listen=True), record) == ["Accessibility"]
+
+
+def test_menu_says_quietly_which_permission_is_missing(monkeypatch):
+    import dataclasses
+    import interface.app as app_mod
+    from engine.config import VocabularyConfig, load_config
+    from engine.session import SessionManager
+    config = dataclasses.replace(load_config(), vocabulary=VocabularyConfig(file=None))
+    app = app_mod.VoiceAssistantApp(config=config, session_manager=SessionManager(config=config))
+    app.overlay = None
+    try:
+        assert app._ready_status_text() == "Status: Ready (Mic closed)"
+        app.missing_permissions = ["Accessibility"]
+        assert "Needs permission: Accessibility" in app._ready_status_text()
+        # After granting and clicking Check Permissions, the hint goes away
+        monkeypatch.setattr(app_mod, "get_all_permissions", lambda: _perms(mic=True, ax=True, listen=True))
+        monkeypatch.setattr(app_mod.rumps, "alert", lambda *a, **k: 0)
+        app.show_permissions_dialog()
+        assert app.missing_permissions == [] and app.status_item.title == "Status: Ready (Mic closed)"
+    finally:
+        app.menu_icon.stop()

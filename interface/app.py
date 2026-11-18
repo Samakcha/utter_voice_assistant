@@ -165,7 +165,7 @@ class VoiceAssistantApp(rumps.App):
         )
 
         # Build menu items
-        status_text = "Status: Loading Whisper model..." if not self.model_ready else "Status: Ready (Mic closed)"
+        status_text = "Status: Loading Whisper model..." if not self.model_ready else self._ready_status_text()
         self.status_item = rumps.MenuItem(status_text, callback=None)
         self.toggle_item = rumps.MenuItem("Stop Utter", callback=self.toggle_service)
         self.permissions_item = rumps.MenuItem("Check Permissions", callback=self.show_permissions_dialog)
@@ -175,6 +175,7 @@ class VoiceAssistantApp(rumps.App):
         self.log_item = rumps.MenuItem("Open Log", callback=self.open_log)
         # Set by main.py: the user's settings file and the log file
         self.settings_file: Optional[Path] = None
+        self.missing_permissions: List[str] = []  # set by main.py; shown in the menu
         self.log_file: Optional[Path] = None
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
 
@@ -205,6 +206,13 @@ class VoiceAssistantApp(rumps.App):
         except Exception as e:
             logger.debug("Menu bar icon update failed: %s", e)
 
+    def _ready_status_text(self) -> str:
+        """The first menu line when idle; says so (quietly) when a permission is still missing."""
+        missing = getattr(self, "missing_permissions", [])
+        if missing:
+            return f"⚠️ Needs permission: {', '.join(missing)} (see Check Permissions)"
+        return "Status: Ready (Mic closed)"
+
     def on_model_ready(self) -> None:
         """Called when transcriber completes loading and warmup on worker thread."""
         self.model_ready = True
@@ -212,7 +220,7 @@ class VoiceAssistantApp(rumps.App):
         def _update_ui():
             if self.is_running and not self.session_manager.is_listening:
                 self._set_menu_state(menu_icon.READY)
-                self.status_item.title = "Status: Ready (Mic closed)"
+                self.status_item.title = self._ready_status_text()
 
         run_on_main_thread(_update_ui)
         logger.info("Utter is ready for voice sessions.")
@@ -236,7 +244,7 @@ class VoiceAssistantApp(rumps.App):
             self.hotkey_manager.enabled = True
             self._set_menu_state(menu_icon.READY if self.model_ready else menu_icon.LOADING)
             self.toggle_item.title = "Stop Utter"
-            self.status_item.title = "Status: Ready (Mic closed)" if self.model_ready else "Status: Loading model..."
+            self.status_item.title = self._ready_status_text() if self.model_ready else "Status: Loading model..."
             logger.info("Voice assistant resumed.")
         else:
             # When stopped, microphone must not be open at all
@@ -1520,7 +1528,7 @@ class VoiceAssistantApp(rumps.App):
         def _update_ui():
             if self.is_running:
                 self._set_menu_state(menu_icon.READY)
-                self.status_item.title = "Status: Ready (Mic closed)"
+                self.status_item.title = self._ready_status_text()
             else:
                 self._set_menu_state(menu_icon.STOPPED)
                 self.status_item.title = "Status: Stopped (Inactive)"
@@ -1535,6 +1543,9 @@ class VoiceAssistantApp(rumps.App):
         permissions = get_all_permissions()
         report = format_permissions_report(permissions)
         missing = [p for p in permissions.values() if not p.granted]
+        self.missing_permissions = [p.name for p in missing]
+        if self.model_ready and not self.session_manager.is_listening:
+            self.status_item.title = self._ready_status_text()
 
         if not missing:
             rumps.alert("Permissions OK", "All required permissions are granted:\n- Microphone\n- Accessibility\n- Input Monitoring")

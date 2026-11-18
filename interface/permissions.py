@@ -1,7 +1,9 @@
 """macOS permissions detection and guidance for Microphone, Accessibility, and Input Monitoring."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import json
 import logging
+from pathlib import Path
 import subprocess
 import sys
 from typing import Dict, List, Optional
@@ -136,6 +138,34 @@ def request_missing_permissions(permissions: Optional[Dict[str, PermissionItem]]
             logger.debug("Could not ask for Input Monitoring: %s", e)
     if asked:
         logger.info("Asked macOS for: %s", ", ".join(asked))
+    return asked
+
+
+ASKED_FILE_NAME = "permissions_asked.json"
+
+
+def ask_missing_once(permissions: Dict[str, PermissionItem], record_file: Path) -> List[str]:
+    """
+    Ask macOS for missing permissions at start, but each one only once ever: macOS's window
+    ("Utter would like to control this Mac...") appears on the first start, never on every
+    start. What was asked is remembered in record_file (in the data folder). If a permission
+    is still missing later, Utter only says so in its menu; "Check Permissions" asks again.
+    """
+    try:
+        asked_before = set(json.loads(record_file.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        asked_before = set()
+    pending = {
+        key: (replace(item, granted=True) if item.name in asked_before else item)
+        for key, item in permissions.items()
+    }
+    asked = request_missing_permissions(pending)
+    if asked:
+        try:
+            record_file.parent.mkdir(parents=True, exist_ok=True)
+            record_file.write_text(json.dumps(sorted(asked_before | set(asked))), encoding="utf-8")
+        except OSError as e:
+            logger.warning("Could not remember which permissions were asked: %s", e)
     return asked
 
 
