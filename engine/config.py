@@ -181,16 +181,16 @@ class CleanupConfig:
 # Utter's Supabase project (accounts). The key is the project's *publishable* key
 # (sb_publishable_..., formerly "anon"): public by design, it only lets the app ask Supabase
 # to sign people in. Never put the secret key (sb_secret_..., formerly service_role) here.
-SUPABASE_URL = ""
-SUPABASE_ANON_KEY = ""
+SUPABASE_URL = "https://qgohzlathlkwevzvjeew.supabase.co"
+SUPABASE_ANON_KEY = "sb_publishable_exbZeQETS4-0enXkACIBmw_4_ucu0zZ"
 
 
 @dataclass(frozen=True)
 class AccountConfig:
     """Sign-in (engine/account.py). Without a url and key, accounts are off and nobody has
-    to sign in (developer copies before the project is set up)."""
-    url: str = SUPABASE_URL
-    anon_key: str = SUPABASE_ANON_KEY
+    to sign in. load_config() fills in Utter's own project (SUPABASE_URL / SUPABASE_ANON_KEY)."""
+    url: str = ""
+    anon_key: str = ""
 
     @property
     def enabled(self) -> bool:

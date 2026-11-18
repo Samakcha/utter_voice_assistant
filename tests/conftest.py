@@ -113,6 +113,11 @@ def global_safety_net(monkeypatch):
         raise RuntimeError("SAFETY NET BLOCKED: real Keychain access in a test! Use MemoryKeychain.")
     monkeypatch.setattr("interface.keychain._security", _blocked_keychain)
 
+    # Utter's real Supabase project is never used by tests: accounts are off unless a test
+    # turns them on with a fake server (tests/test_accounts.py)
+    monkeypatch.setattr("engine.config.SUPABASE_URL", "")
+    monkeypatch.setattr("engine.config.SUPABASE_ANON_KEY", "")
+
     # 5b. Pasting is allowed in tests unless a test says otherwise (the shell running the tests
     # may not have Accessibility; dictation tests check what gets pasted)
     monkeypatch.setattr("interface.app._paste_allowed", lambda: True)

@@ -210,8 +210,19 @@ def test_without_a_project_nothing_is_sent():
     assert not AccountConfig(url="", anon_key="").enabled
 
 
-def test_project_comes_from_the_app_unless_the_settings_name_another(tmp_path):
-    assert load_config().account == AccountConfig()
+def test_utter_has_its_own_project_built_in():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parent.parent / "engine" / "config.py").read_text(encoding="utf-8")
+    assert 'SUPABASE_URL = "https://' in source and '.supabase.co"' in source
+    assert 'SUPABASE_ANON_KEY = "sb_publishable_' in source  # the public key, never sb_secret_
+    assert "sb_secret_" not in source.split("SUPABASE_ANON_KEY =")[1].splitlines()[0]
+
+
+def test_project_comes_from_the_app_unless_the_settings_name_another(tmp_path, monkeypatch):
+    assert load_config().account == AccountConfig()  # tests: the real project is switched off
+    monkeypatch.setattr("engine.config.SUPABASE_URL", "https://built-in.supabase.co")
+    monkeypatch.setattr("engine.config.SUPABASE_ANON_KEY", "sb_publishable_x")
+    assert load_config().account == AccountConfig("https://built-in.supabase.co", "sb_publishable_x")
     path = tmp_path / "config.toml"
     shipped = (load_config.__globals__["DEFAULT_CONFIG_PATH"]).read_text(encoding="utf-8")
     path.write_text(shipped.replace('# url = "https://your-project.supabase.co"', f'url = "{URL}"')
