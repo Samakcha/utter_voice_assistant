@@ -136,6 +136,16 @@ def test_create_account_confirm_with_the_emailed_code(auth, server):
     assert "a-good-password" not in url  # never in the address
 
 
+def test_the_publishable_key_is_never_sent_as_a_bearer_token(auth, server):
+    auth.sign_up("me@example.com", "a-good-password")
+    _, _, headers, _ = server.requests[0]
+    assert headers["apikey"] == KEY and "Authorization" not in headers
+    session = auth.verify_signup("me@example.com", "123456")
+    auth.sign_out(session)
+    _, url, headers, _ = server.requests[-1]
+    assert url.endswith("/logout") and headers["Authorization"] == f"Bearer {session.access_token}"
+
+
 def test_projects_without_email_confirmation_sign_in_at_once(server):
     server.confirm_email = False
     auth = SupabaseAuth(URL, KEY, transport=server)

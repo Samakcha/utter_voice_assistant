@@ -218,8 +218,12 @@ class SupabaseAuth:
     def _call(self, method: str, path: str, body: Optional[dict], token: Optional[str] = None) -> dict:
         if not self.configured:
             raise AuthError("Accounts are not set up in this copy of Utter.", "not_configured")
-        headers = {"apikey": self.anon_key, "Content-Type": "application/json", "Accept": "application/json",
-                   "Authorization": f"Bearer {token or self.anon_key}"}
+        # The project key goes in "apikey" only: Supabase's new publishable keys (sb_publishable_...)
+        # are not tokens and are refused as "Authorization: Bearer"; that header carries a
+        # signed-in user's access token, and only when there is one.
+        headers = {"apikey": self.anon_key, "Content-Type": "application/json", "Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         try:
             status, data = self._transport(method, self.url + path, headers, body)
         except (urllib.error.URLError, OSError, TimeoutError) as e:

@@ -178,8 +178,9 @@ class CleanupConfig:
     corrections: bool = True  # "Monday, no wait, Tuesday", "scratch that"
 
 
-# Utter's Supabase project (accounts). The anon key is public by design: it only lets the
-# app ask Supabase to sign people in. Never put the service_role key here or in the app.
+# Utter's Supabase project (accounts). The key is the project's *publishable* key
+# (sb_publishable_..., formerly "anon"): public by design, it only lets the app ask Supabase
+# to sign people in. Never put the secret key (sb_secret_..., formerly service_role) here.
 SUPABASE_URL = ""
 SUPABASE_ANON_KEY = ""
 
