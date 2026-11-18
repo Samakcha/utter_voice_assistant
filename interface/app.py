@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 import AppKit
 import rumps
 
+from engine.account import SupabaseAuth
 from engine.actions import ActionResult, execute_action_async, launch_app
 from engine.apps import STATUS_AMBIGUOUS, AppInventory
 from engine.chunk_joiner import join_transcription_chunks
@@ -33,6 +34,8 @@ from engine.vocabulary import VocabularyStore, build_whisper_prompt, correct_tex
 from .clipboard import copy_text_to_pasteboard, get_general_pasteboard, paste_and_restore
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
 from .key_events import is_hold
+from . import account_form
+from .account_manager import REFRESH_EVERY_SEC, AccountManager
 from . import login_item as login_item_module
 from .login_item import LoginItem
 from . import setup_flow
@@ -62,6 +65,11 @@ def _paste_allowed() -> bool:
     """macOS lets Utter press ⌘V for you only with Accessibility; without it the keystroke is
     silently dropped (and restoring the old clipboard would then lose the dictation)."""
     return check_accessibility_permission()
+
+
+def run_soon(fn) -> None:
+    """Run on the main thread once the current work (or app start) is done."""
+    AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(fn)
 
 
 def run_on_main_thread(fn, *args):
@@ -197,10 +205,16 @@ class VoiceAssistantApp(rumps.App):
         self.login_item = LoginItem()
         self.welcome = None  # the open welcome window (interface/welcome_window.py), if any
         self._refresh_login_menu()
+        # Utter account (required when set up): main.py calls account.load() at start
+        self.account = AccountManager(SupabaseAuth(config.account.url, config.account.anon_key))
+        self.account.on_change = lambda: run_on_main_thread(self._on_account_change)
+        self.account_item = rumps.MenuItem("Sign In…", callback=self.show_sign_in)
+        self._account_timer = None
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.menu = [
             self.status_item,
+            *([self.account_item] if self.account.enabled else []),
             None,  # Separator
             self.toggle_item,
             self.setup_item,
@@ -230,6 +244,9 @@ class VoiceAssistantApp(rumps.App):
 
     def _ready_status_text(self) -> str:
         """The first menu line when idle; says so (quietly) when a permission is still missing."""
+        account = getattr(self, "account", None)
+        if account is not None and account.locked:
+            return "🔒 Sign in to use Utter"
         missing = getattr(self, "missing_permissions", [])
         if missing:
             return f"⚠️ Needs permission: {', '.join(missing)} (see Check Permissions)"
@@ -301,12 +318,81 @@ class VoiceAssistantApp(rumps.App):
                 start_at_login=(login_on == login_item_module.ON) or (
                     login_on == login_item_module.OFF and not record.get("done") and default_login),
                 start_step=start_step,
+                **self._account_window_args(),
             )
             self.welcome.show()
             logger.info("[Setup] Welcome window shown.")
         except Exception as e:
             logger.error("Could not show the welcome window: %s", e, exc_info=True)
             self.welcome = None
+
+    def _account_window_args(self) -> dict:
+        if not self.account.enabled:
+            return {}
+        return {
+            "account_form": account_form.AccountForm(self.account.auth, signed_in_email=self.account.email),
+            "signed_in": self.account.signed_in_with,
+            "sign_out": self.account.sign_out,
+        }
+
+    # ---- Account ------------------------------------------------------------------------
+
+    def start_account(self, show_sign_in: bool) -> None:
+        """At start (main.py): read the saved login, renew it now and every few hours, and
+        open the sign-in window if nobody is signed in."""
+        if not self.account.enabled:
+            return
+        self.account.load()
+        self._refresh_account_menu()
+        self.account.refresh_in_background()
+        self._account_timer = rumps.Timer(lambda _t: self.account.refresh_in_background(), REFRESH_EVERY_SEC)
+        self._account_timer.start()
+        if show_sign_in and self.account.locked:
+            run_soon(self.show_sign_in)
+
+    def show_sign_in(self, _sender=None) -> None:
+        """The account step alone, as the "Sign in to Utter" window."""
+        if self.welcome is not None and self.welcome.is_visible:
+            self.welcome.show()
+            return
+        from .welcome_window import WelcomeWindow
+        try:
+            self.welcome = WelcomeWindow(
+                command_hotkey=self.config.hotkeys.command_mode,
+                dictation_hotkey=self.config.hotkeys.dictation_mode,
+                permissions=lambda: {k: p.granted for k, p in get_all_permissions().items()},
+                turn_on=self._setup_turn_on,
+                steps=setup_flow.ACCOUNT_ONLY,
+                finish=lambda _start_at_login: None,
+                closed=self._refresh_account_menu,
+                **self._account_window_args(),
+            )
+            self.welcome.show()
+        except Exception as e:
+            logger.error("Could not show the sign-in window: %s", e, exc_info=True)
+            self.welcome = None
+
+    def confirm_sign_out(self, _sender=None) -> None:
+        choice = rumps.alert(
+            title="Sign out of Utter?",
+            message=f"You are signed in as {self.account.email}. Utter can't be used again until "
+                    "you sign in.",
+            ok="Sign Out", cancel="Cancel")
+        if choice == 1:
+            self.account.sign_out()
+
+    def _on_account_change(self) -> None:
+        self._refresh_account_menu()
+        if self.model_ready and self.is_running and not self.session_manager.is_listening:
+            self.status_item.title = self._ready_status_text()
+
+    def _refresh_account_menu(self) -> None:
+        if self.account.signed_in:
+            self.account_item.title = f"Sign Out ({self.account.email})"
+            self.account_item.set_callback(self.confirm_sign_out)
+        else:
+            self.account_item.title = "Sign In…"
+            self.account_item.set_callback(self.show_sign_in)
 
     def _asked_before(self, key: str) -> bool:
         if key == "microphone":
@@ -396,9 +482,22 @@ class VoiceAssistantApp(rumps.App):
             self.status_item.title = "Status: Stopped (Inactive)"
             logger.info("Voice assistant stopped.")
 
+    def _blocked_until_sign_in(self) -> bool:
+        """Utter does nothing until someone signs in; the hotkey opens the sign-in window."""
+        if not self.account.locked:
+            return False
+        logger.info("Hotkey pressed while signed out: showing the sign-in window.")
+
+        def _ask():
+            if self.overlay is not None:
+                self.overlay.show_not_run("Sign in to use Utter")
+            self.show_sign_in()
+        run_on_main_thread(_ask)
+        return True
+
     def _on_command_hotkey(self) -> None:
         """Handle command mode hotkey trigger."""
-        if not self.is_running:
+        if not self.is_running or self._blocked_until_sign_in():
             return
         if self.session_manager.is_listening and self.session_manager.current_mode == SessionMode.NOTE:
             self.session_manager.stop_session(EndReason.HOTKEY)
@@ -409,7 +508,7 @@ class VoiceAssistantApp(rumps.App):
         """Handle dictation mode hotkey press (start, or stop if already dictating)."""
         with self._hold_lock:
             self._hold_session_id = None
-        if not self.is_running:
+        if not self.is_running or self._blocked_until_sign_in():
             return
         if self.session_manager.is_listening and self.session_manager.current_mode == SessionMode.NOTE:
             self.session_manager.stop_session(EndReason.HOTKEY)
@@ -1769,6 +1868,8 @@ class VoiceAssistantApp(rumps.App):
         logger.info("Quitting Utter...")
         self.is_running = False
         self.menu_icon.stop()
+        if self._account_timer is not None:
+            self._account_timer.stop()
         if self.overlay is not None:
             self.overlay.hide()
         self.hotkey_manager.stop()

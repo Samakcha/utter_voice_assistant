@@ -210,6 +210,9 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     app.log_file = log_file
     app.setup_record = setup_record
     app.permissions_record = asked_record
+    # Signing in is required (when accounts are set up): the welcome includes it on the first
+    # start; later starts open the sign-in window while nobody is signed in
+    app.start_account(show_sign_in=not first_run)
     if first_run:
         app.schedule_setup(start_step=setup_flow.resume_step(setup_record))
 

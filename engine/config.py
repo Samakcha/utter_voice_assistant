@@ -178,6 +178,24 @@ class CleanupConfig:
     corrections: bool = True  # "Monday, no wait, Tuesday", "scratch that"
 
 
+# Utter's Supabase project (accounts). The anon key is public by design: it only lets the
+# app ask Supabase to sign people in. Never put the service_role key here or in the app.
+SUPABASE_URL = ""
+SUPABASE_ANON_KEY = ""
+
+
+@dataclass(frozen=True)
+class AccountConfig:
+    """Sign-in (engine/account.py). Without a url and key, accounts are off and nobody has
+    to sign in (developer copies before the project is set up)."""
+    url: str = SUPABASE_URL
+    anon_key: str = SUPABASE_ANON_KEY
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.url and self.anon_key)
+
+
 @dataclass(frozen=True)
 class AppConfig:
     hotkeys: HotkeysConfig
@@ -193,6 +211,7 @@ class AppConfig:
     vocabulary: VocabularyConfig = VocabularyConfig()
     apps: AppsConfig = AppsConfig()
     cleanup: CleanupConfig = CleanupConfig()
+    account: AccountConfig = AccountConfig()
 
 
 def load_user_config(paths: Optional[DataPaths] = None) -> AppConfig:
@@ -332,4 +351,13 @@ def load_config(config_path: Optional[Path] = None) -> AppConfig:
         vocabulary=vocabulary,
         apps=apps,
         cleanup=cleanup,
+        account=_load_account(data.get("account", {})),
+    )
+
+
+def _load_account(data: dict) -> AccountConfig:
+    """[account] in config.toml can point a developer copy at another project; normally empty."""
+    return AccountConfig(
+        url=str(data.get("url") or SUPABASE_URL).strip(),
+        anon_key=str(data.get("anon_key") or SUPABASE_ANON_KEY).strip(),
     )

@@ -2,13 +2,16 @@
 The first-run welcome ("Setup…"): its steps and what each one shows, without any window.
 
   1. Welcome      what Utter does, and its two hotkeys
-  2. Permissions  Microphone, Accessibility, Input Monitoring, one row each; every row ticks
+  2. Account      create an Utter account or sign in (required; only when accounts are set
+                  up). Continue stays off until signed in. See interface/account_form.py.
+  3. Permissions  Microphone, Accessibility, Input Monitoring, one row each; every row ticks
                   itself (✓) as soon as macOS reports it on (checked every second). A row that
                   stays off after its button was used shows how to fix a stuck entry.
-  3. Try it       press the dictation hotkey and speak into a box in the window
-  4. Finish       Start at login (on by default), then Utter keeps running in the menu bar
+  4. Try it       press the dictation hotkey and speak into a box in the window
+  5. Finish       Start at login (on by default), then Utter keeps running in the menu bar
 
 Shown automatically once (the first time Utter.app opens); afterwards only from the menu.
+While nobody is signed in, the account step alone opens at every start ("Sign In…").
 Plain logic here (testable); interface/welcome_window.py draws it.
 """
 
@@ -16,12 +19,17 @@ from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
 SETUP_FILE_NAME = "setup.json"
-STEPS = ["welcome", "permissions", "try", "finish"]
+STEPS = ["welcome", "account", "permissions", "try", "finish"]
+ACCOUNT_ONLY = ["account"]  # the sign-in window
+
+
+def steps_for(accounts: bool) -> List[str]:
+    return list(STEPS) if accounts else [s for s in STEPS if s != "account"]
 PERMISSION_ORDER = ["microphone", "accessibility", "input_monitoring"]
 STUCK_AFTER_SEC = 12.0  # a row still off this long after its button: show the fix
 TRY_HELP_AFTER_SEC = 20.0  # nothing typed this long on the Try step: offer a restart
@@ -69,10 +77,10 @@ def setup_needed(record_file: Path) -> bool:
     return not read_record(record_file).get("done", False)
 
 
-def resume_step(record_file: Path) -> int:
+def resume_step(record_file: Path) -> str:
     """Where to reopen after "Restart Utter" in the middle of setup (else the beginning)."""
     step = read_record(record_file).get("resume")
-    return STEPS.index(step) if step in STEPS else 0
+    return step if step in STEPS else "welcome"
 
 
 def write_record(record_file: Path, **fields) -> None:
@@ -125,8 +133,13 @@ class PermissionRow:
 class SetupFlow:
     """State of the welcome window. `now` is passed in (seconds), so tests control time."""
 
-    def __init__(self, start_step: int = 0, start_at_login: bool = START_AT_LOGIN_DEFAULT):
-        self.step = max(0, min(start_step, len(STEPS) - 1))
+    def __init__(self, start_step: Union[int, str] = 0, start_at_login: bool = START_AT_LOGIN_DEFAULT,
+                 steps: Sequence[str] = None, signed_in: bool = False):
+        self.steps = list(steps) if steps is not None else steps_for(accounts=False)
+        if isinstance(start_step, str):
+            start_step = self.steps.index(start_step) if start_step in self.steps else 0
+        self.step = max(0, min(start_step, len(self.steps) - 1))
+        self.signed_in = signed_in
         self.rows: Dict[str, PermissionRow] = {k: PermissionRow(k) for k in PERMISSION_ORDER}
         self.start_at_login = start_at_login
         self.try_text = ""
@@ -136,10 +149,10 @@ class SetupFlow:
     # Steps
     @property
     def step_name(self) -> str:
-        return STEPS[self.step]
+        return self.steps[self.step]
 
     def next(self, now: float = 0.0) -> str:
-        self.step = min(self.step + 1, len(STEPS) - 1)
+        self.step = min(self.step + 1, len(self.steps) - 1)
         if self.step_name == "try" and self.try_started_at is None:
             self.try_started_at = now
         return self.step_name
@@ -149,14 +162,14 @@ class SetupFlow:
         return self.step_name
 
     def go_to(self, name: str, now: float = 0.0) -> str:
-        self.step = STEPS.index(name)
+        self.step = self.steps.index(name)
         if name == "try" and self.try_started_at is None:
             self.try_started_at = now
         return name
 
     @property
     def is_last(self) -> bool:
-        return self.step == len(STEPS) - 1
+        return self.step == len(self.steps) - 1
 
     # Permissions
     def update_permissions(self, granted: Dict[str, bool]) -> List[str]:
@@ -194,10 +207,17 @@ class SetupFlow:
         self._hotkeys_ready = ready
         return False
 
+    @property
+    def can_continue(self) -> bool:
+        """The account step is required: no way past it without signing in."""
+        return self.step_name != "account" or self.signed_in
+
     def continue_title(self) -> str:
         name = self.step_name
         if name == "welcome":
             return "Get Started"
+        if name == "account":
+            return "Start Using Utter" if self.is_last else "Continue"
         if name == "permissions":
             return "Continue" if self.all_granted else "Skip for Now"
         if name == "try":

@@ -7,6 +7,7 @@ Ensures that across the ENTIRE test suite:
 4. subprocess calls to `open` (launching apps) or `lsappinfo` are intercepted and raise.
 5. get_general_pasteboard() is redirected to an isolated in-memory test pasteboard
    so the developer's real clipboard is NEVER read or modified by any test.
+5a. No test reaches the internet (urllib) or the real macOS Keychain.
 6. No test may write into the real user data folder (~/Library/Application Support/Utter,
    or the old .../VoiceAssistant), the real log folder (~/Library/Logs/Utter), or move the
    project's Whisper models: engine.config.data_paths() points at a per-test folder.
@@ -100,6 +101,17 @@ def global_safety_net(monkeypatch):
     monkeypatch.setattr("interface.clipboard.get_general_pasteboard", lambda: test_pasteboard)
     monkeypatch.setattr("interface.whatsapp_control.get_general_pasteboard", lambda: test_pasteboard)
     monkeypatch.setattr("interface.app.get_general_pasteboard", lambda: test_pasteboard)
+
+    # 5a. No real network (the sign-in server) and no real Keychain in any test
+    import urllib.request
+
+    def _blocked_urlopen(*args, **kwargs):
+        raise RuntimeError("SAFETY NET BLOCKED: real network request in a test! Use a fake transport.")
+    monkeypatch.setattr(urllib.request, "urlopen", _blocked_urlopen)
+
+    def _blocked_keychain():
+        raise RuntimeError("SAFETY NET BLOCKED: real Keychain access in a test! Use MemoryKeychain.")
+    monkeypatch.setattr("interface.keychain._security", _blocked_keychain)
 
     # 5b. Pasting is allowed in tests unless a test says otherwise (the shell running the tests
     # may not have Accessibility; dictation tests check what gets pasted)

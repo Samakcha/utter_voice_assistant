@@ -206,3 +206,11 @@ repeats = true
 # "the red one, I mean the blue one" -> "the blue one", and "scratch that" removes the
 # sentence before it.
 corrections = true
+
+[account]
+# Everyone signs in once with an email and password (an Utter account), so the number of
+# users can be counted. Only the email and password are sent, to Utter's Supabase project;
+# voice, dictated text and notes never leave the Mac. After that Utter works offline.
+# Utter's own project is built in; set url and anon_key only to use a different project.
+# url = "https://your-project.supabase.co"
+# anon_key = "..."

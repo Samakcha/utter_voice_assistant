@@ -4,16 +4,21 @@ steps with AppKit; all decisions are made there. Runs on the main thread only.
 
 The window checks the permissions twice a second while it is open, so each ✓ appears by
 itself as soon as the permission is switched on in System Settings.
+
+With only the account step it is the "Sign in to Utter" window (interface/account_form.py);
+calls to the sign-in server run on a background thread, never blocking the menu bar.
 """
 
 import logging
 from pathlib import Path
+import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import AppKit
 import objc
 
+from . import account_form as af
 from . import setup_flow
 from .setup_flow import PERMISSION_ORDER, SetupFlow
 
@@ -101,6 +106,33 @@ def _rect(x, y, w, h):
     return AppKit.NSMakeRect(x, y, w, h)
 
 
+def _link_title(title: str):
+    style = AppKit.NSMutableParagraphStyle.alloc().init()
+    style.setAlignment_(AppKit.NSTextAlignmentCenter)
+    return AppKit.NSAttributedString.alloc().initWithString_attributes_(title, {
+        AppKit.NSForegroundColorAttributeName: AppKit.NSColor.linkColor(),
+        AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(12.5),
+        AppKit.NSParagraphStyleAttributeName: style,
+    })
+
+
+def _link(title: str, frame, target):
+    button = AppKit.NSButton.alloc().initWithFrame_(frame)
+    button.setBordered_(False)
+    button.setTarget_(target)
+    button.setAction_("fire:")
+    button.setAttributedTitle_(_link_title(title))
+    return button
+
+
+def _in_background(work: Callable[[], None]) -> None:
+    threading.Thread(target=work, name="account", daemon=True).start()
+
+
+def _on_main(work: Callable[[], None]) -> None:
+    AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(work)
+
+
 class WelcomeWindow:
     """
     Callbacks (all optional):
@@ -111,6 +143,10 @@ class WelcomeWindow:
       restart()                         quit and reopen Utter (resume on the Try step)
       finish(start_at_login)            the last button
       closed()                          the window was closed (finished or not)
+      signed_in(session)                the account step signed someone in
+      sign_out()                        "Use a different account"
+    account_form: the account step's logic (None: accounts are off, no account step).
+    steps: which steps to show (default: all that apply); ["account"] = sign-in window.
     """
 
     def __init__(
@@ -126,8 +162,14 @@ class WelcomeWindow:
         closed: Callable[[], None] = lambda: None,
         login_available: bool = True,
         start_at_login: bool = setup_flow.START_AT_LOGIN_DEFAULT,
-        start_step: int = 0,
+        start_step: Union[int, str] = 0,
         clock: Callable[[], float] = time.monotonic,
+        account_form: Optional[af.AccountForm] = None,
+        signed_in: Callable[[object], None] = lambda session: None,
+        sign_out: Callable[[], None] = lambda: None,
+        steps: Optional[Sequence[str]] = None,
+        background: Callable[[Callable[[], None]], None] = _in_background,
+        main: Callable[[Callable[[], None]], None] = _on_main,
     ):
         self.command_key = setup_flow.format_hotkey(command_hotkey)
         self.dictation_key = setup_flow.format_hotkey(dictation_hotkey)
@@ -140,7 +182,15 @@ class WelcomeWindow:
         self._closed = closed
         self.login_available = login_available
         self._clock = clock
-        self.flow = SetupFlow(start_step=start_step, start_at_login=start_at_login)
+        self.account_form = account_form
+        self._signed_in = signed_in
+        self._sign_out = sign_out
+        self._background = background
+        self._main = main
+        self.flow = SetupFlow(
+            start_step=start_step, start_at_login=start_at_login,
+            steps=steps if steps is not None else setup_flow.steps_for(accounts=account_form is not None),
+            signed_in=bool(account_form and account_form.done))
         if self.flow.step_name == "try":
             self.flow.try_started_at = clock()
         self._finished = False
@@ -165,7 +215,8 @@ class WelcomeWindow:
                  | AppKit.NSWindowStyleMaskFullSizeContentView)
         self.window = UtterSetupWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             _rect(0, 0, WIDTH, HEIGHT), style, AppKit.NSBackingStoreBuffered, False)
-        self.window.setTitle_("Welcome to Utter")
+        self.window.setTitle_("Sign in to Utter" if self.flow.steps == setup_flow.ACCOUNT_ONLY
+                              else "Welcome to Utter")
         self.window.setTitlebarAppearsTransparent_(True)
         self.window.setTitleVisibility_(AppKit.NSWindowTitleHidden)
         self.window.setReleasedWhenClosed_(False)
@@ -173,8 +224,11 @@ class WelcomeWindow:
         self.window.setDelegate_(self._delegate)
         content = self.window.contentView()
 
-        for name, build in (("welcome", self._build_welcome), ("permissions", self._build_permissions),
-                            ("try", self._build_try), ("finish", self._build_finish)):
+        builders = [("welcome", self._build_welcome), ("permissions", self._build_permissions),
+                    ("try", self._build_try), ("finish", self._build_finish)]
+        if self.account_form is not None:
+            builders.insert(1, ("account", self._build_account))
+        for name, build in builders:
             page = AppKit.NSView.alloc().initWithFrame_(_rect(0, 64, WIDTH, HEIGHT - 64))
             build(page)
             page.setHidden_(True)
@@ -240,6 +294,48 @@ class WelcomeWindow:
             hint.setHidden_(True)
             page.addSubview_(hint)
             self.rows[key] = (mark, button, hint)
+
+    def _build_account(self, page) -> None:
+        self.account_heading = _label("", _rect(MARGIN, 306, WIDTH - 2 * MARGIN, 34), 24,
+                                      AppKit.NSFontWeightBold, align=AppKit.NSTextAlignmentCenter)
+        page.addSubview_(self.account_heading)
+        self.account_subtitle = _label("", _rect(60, 262, WIDTH - 120, 36), 13,
+                                       color=AppKit.NSColor.secondaryLabelColor(),
+                                       align=AppKit.NSTextAlignmentCenter)
+        page.addSubview_(self.account_subtitle)
+        x, w = (WIDTH - 320) / 2, 320
+        self.email_field = AppKit.NSTextField.alloc().initWithFrame_(_rect(x, 218, w, 28))
+        self.email_field.setPlaceholderString_("Email")
+        self.password_field = AppKit.NSSecureTextField.alloc().initWithFrame_(_rect(x, 180, w, 28))
+        self.code_field = AppKit.NSTextField.alloc().initWithFrame_(_rect(x, 218, w, 28))
+        self.code_field.setPlaceholderString_("6-digit code")
+        for field in (self.email_field, self.password_field, self.code_field):
+            field.setFont_(AppKit.NSFont.systemFontOfSize_(14))
+            field.setBezelStyle_(AppKit.NSTextFieldRoundedBezel)
+            page.addSubview_(field)
+        self.account_check = _label("✓", _rect((WIDTH - 60) / 2, 196, 60, 48), 40, AppKit.NSFontWeightBold,
+                                    color=AppKit.NSColor.systemGreenColor(), align=AppKit.NSTextAlignmentCenter)
+        page.addSubview_(self.account_check)
+        self.submit_button = _button("", _rect(x, 132, w, 32), self._target(lambda: self.account(af.SUBMIT)))
+        page.addSubview_(self.submit_button)
+        self.spinner = AppKit.NSProgressIndicator.alloc().initWithFrame_(_rect(x + w + 10, 140, 16, 16))
+        self.spinner.setStyle_(AppKit.NSProgressIndicatorStyleSpinning)
+        self.spinner.setDisplayedWhenStopped_(False)
+        page.addSubview_(self.spinner)
+        self.account_message = _label("", _rect(70, 88, WIDTH - 140, 36), 12,
+                                      align=AppKit.NSTextAlignmentCenter, selectable=True)
+        page.addSubview_(self.account_message)
+        self.account_links = [
+            _link("", _rect(70, 56, 200, 22), self._target(lambda: self._account_link(0))),
+            _link("", _rect(WIDTH - 270, 56, 200, 22), self._target(lambda: self._account_link(1))),
+        ]
+        for link in self.account_links:
+            page.addSubview_(link)
+
+    def _account_link(self, index: int) -> None:
+        links = self.account_form.links()
+        if index < len(links):
+            self.account(links[index][1])
 
     def _build_try(self, page) -> None:
         self._title(page, "Try it", 306)
@@ -316,8 +412,14 @@ class WelcomeWindow:
         name = self.flow.step_name
         for page_name, page in self.pages.items():
             page.setHidden_(page_name != name)
-        self.step_label.setStringValue_(f"Step {self.flow.step + 1} of {len(setup_flow.STEPS)}")
+        total = len(self.flow.steps)
+        self.step_label.setStringValue_(f"Step {self.flow.step + 1} of {total}" if total > 1 else "")
         self.back_button.setHidden_(self.flow.step == 0)
+        # Return presses the form's own button on the account step, else Continue
+        on_account = name == "account" and self.account_form is not None
+        self.next_button.setKeyEquivalent_("" if on_account and not self.account_form.done else "\r")
+        if on_account:
+            self._update_account(focus=True)
         if name == "try" and self.window is not None:
             self.window.makeFirstResponder_(self.try_field)
         if name == "finish":
@@ -350,6 +452,108 @@ class WelcomeWindow:
         self.try_help.setHidden_(not needs_help)
         self.restart_button.setHidden_(not needs_help)
         self.next_button.setTitle_(self.flow.continue_title())
+        self.next_button.setEnabled_(self.flow.can_continue)
+
+    def _update_account(self, focus: bool = False) -> None:
+        form = self.account_form
+        if form is None:
+            return
+        fields = form.fields()
+        self.account_heading.setStringValue_(form.heading())
+        self.account_subtitle.setStringValue_(form.subtitle())
+        self.email_field.setHidden_(not fields.email)
+        self.code_field.setHidden_(not fields.code)
+        self.password_field.setHidden_(not fields.password)
+        self.password_field.setPlaceholderString_(form.password_placeholder())
+        self.account_check.setHidden_(not form.done)
+        if fields.email and not str(self.email_field.stringValue()) and form.email:
+            self.email_field.setStringValue_(form.email)
+        title = form.submit_title()
+        self.submit_button.setHidden_(title is None)
+        self.submit_button.setTitle_(title or "")
+        self.submit_button.setKeyEquivalent_("\r" if title and not form.done else "")
+        for control in (self.submit_button, self.email_field, self.password_field, self.code_field):
+            control.setEnabled_(not form.busy)
+        if form.busy:
+            self.spinner.startAnimation_(None)
+        else:
+            self.spinner.stopAnimation_(None)
+        message = form.error or form.info
+        self.account_message.setStringValue_(message)
+        self.account_message.setTextColor_(AppKit.NSColor.systemRedColor() if form.error
+                                           else AppKit.NSColor.secondaryLabelColor())
+        links = form.links()
+        for i, link in enumerate(self.account_links):
+            if i < len(links):
+                link.setHidden_(False)
+                link.setAttributedTitle_(_link_title(links[i][0]))
+                link.setEnabled_(not form.busy)
+            else:
+                link.setHidden_(True)
+        if len(links) == 1:  # a single link sits in the middle
+            self.account_links[0].setFrame_(_rect((WIDTH - 240) / 2, 56, 240, 22))
+        else:
+            self.account_links[0].setFrame_(_rect(70, 56, 200, 22))
+        self.flow.signed_in = form.done
+        self.next_button.setEnabled_(self.flow.can_continue)
+        self.next_button.setKeyEquivalent_("\r" if form.done else "")
+        if focus and self.window is not None:
+            first = (self.code_field if fields.code else
+                     self.password_field if (fields.email and str(self.email_field.stringValue())) else
+                     self.email_field if fields.email else None)
+            if first is not None:
+                self.window.makeFirstResponder_(first)
+
+    def account(self, action: str) -> None:
+        """A button or link on the account step."""
+        form = self.account_form
+        if form is None or form.busy:
+            return
+        if form.switch(action):
+            self.password_field.setStringValue_("")
+            self._update_account(focus=True)
+            return
+        if action == af.SIGN_OUT:
+            self._sign_out()
+            form.signed_out()
+            self._update_account(focus=True)
+            return
+        email = str(self.email_field.stringValue())
+        password = str(self.password_field.stringValue())
+        code = str(self.code_field.stringValue())
+        problem = form.check(action, email, password, code)
+        if problem:
+            form.error, form.info = problem, ""
+            self._update_account()
+            return
+        mode_before = form.mode
+        form.busy = True
+        self._update_account()
+
+        def work():
+            try:
+                session = form.perform(action, email, password, code)
+            except Exception as e:  # never leave the form stuck "busy"
+                logger.error("Account action failed: %s", e, exc_info=True)
+                form.error, session = "Something went wrong. Please try again.", None
+
+            def finish():
+                form.busy = False
+                if session is not None:
+                    self.password_field.setStringValue_("")
+                    try:
+                        self._signed_in(session)
+                    except Exception as e:
+                        logger.error("Sign-in callback failed: %s", e, exc_info=True)
+                if form.mode != mode_before:
+                    self.code_field.setStringValue_("")
+                    if form.mode != af.SIGN_IN:
+                        self.password_field.setStringValue_("")
+                self._update_account(focus=form.mode != mode_before)
+                if session is not None and self.is_visible:
+                    self._bring_to_front()
+            self._main(finish)
+        self._background(work)
 
     # ---- Events ----------------------------------------------------------------------
 
@@ -384,6 +588,8 @@ class WelcomeWindow:
         self._update_views()
 
     def next(self) -> None:
+        if not self.flow.can_continue:
+            return
         if self.flow.is_last:
             self._finished = True
             self._finish(self.flow.start_at_login and self.login_available)

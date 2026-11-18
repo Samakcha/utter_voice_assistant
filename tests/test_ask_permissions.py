@@ -106,7 +106,7 @@ def test_startup_asks_only_when_running_as_the_app(monkeypatch, isolate_data_pat
                         lambda self, start_step=0: shown.append(start_step))
     app = main_mod.main(run_loop=False)
     # First start of the app: the welcome window asks for each permission instead
-    assert asked == [] and shown == [0]
+    assert asked == [] and shown == ["welcome"]
     assert app.setup_record == isolate_data_paths.data_dir / "setup.json"
     app.hotkey_manager.stop()
     app.menu_icon.stop()
@@ -115,7 +115,7 @@ def test_startup_asks_only_when_running_as_the_app(monkeypatch, isolate_data_pat
     setup_flow.mark_setup_done(app.setup_record)
     monkeypatch.setattr(main_mod, "_instance_lock", None)
     app = main_mod.main(run_loop=False)
-    assert asked == ["permissions_asked.json"] and shown == [0]  # later starts: macOS asks (once ever)
+    assert asked == ["permissions_asked.json"] and shown == ["welcome"]  # later starts: macOS asks (once ever)
     app.hotkey_manager.stop()
     app.menu_icon.stop()
     main_mod._instance_lock.close()

@@ -43,11 +43,11 @@ def test_a_broken_setup_file_shows_the_welcome_again(tmp_path):
 
 def test_restart_in_the_middle_resumes_on_the_try_step(tmp_path):
     record = tmp_path / setup_flow.SETUP_FILE_NAME
-    assert setup_flow.resume_step(record) == 0
+    assert setup_flow.resume_step(record) == "welcome"
     setup_flow.write_record(record, done=False, resume="try")
-    assert setup_flow.setup_needed(record) and setup_flow.resume_step(record) == 2
+    assert setup_flow.setup_needed(record) and setup_flow.resume_step(record) == "try"
     setup_flow.mark_setup_done(record)
-    assert setup_flow.resume_step(record) == 0
+    assert setup_flow.resume_step(record) == "welcome"
 
 
 # ---- The steps -----------------------------------------------------------------------------

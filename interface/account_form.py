@@ -1,0 +1,174 @@
+"""
+The account step of the welcome window: create an account, confirm it with the 6-digit
+code from the email, sign in, or reset a forgotten password. Plain logic (testable);
+interface/welcome_window.py draws it and runs `perform` on a background thread.
+"""
+
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+from engine.account import AuthError, Session, check_code, check_email, check_password
+
+CREATE = "create"
+CONFIRM = "confirm"
+SIGN_IN = "sign_in"
+RESET = "reset"
+DONE = "done"
+
+# Actions (buttons and links)
+SUBMIT = "submit"
+RESEND = "resend"
+FORGOT = "forgot"
+GO_CREATE = "go_create"
+GO_SIGN_IN = "go_sign_in"
+SIGN_OUT = "sign_out"
+
+
+@dataclass
+class Fields:
+    email: bool = False
+    password: bool = False
+    code: bool = False
+
+
+class AccountForm:
+    def __init__(self, auth, signed_in_email: str = ""):
+        self.auth = auth
+        self.mode = DONE if signed_in_email else CREATE
+        self.email = signed_in_email
+        self.error = ""
+        self.info = ""
+        self.busy = False
+
+    # ---- What to show ------------------------------------------------------------------
+
+    def heading(self) -> str:
+        return {CREATE: "Create your Utter account", CONFIRM: "Check your email",
+                SIGN_IN: "Sign in to Utter", RESET: "Choose a new password",
+                DONE: "You're signed in"}[self.mode]
+
+    def subtitle(self) -> str:
+        if self.mode == CREATE:
+            return "Free. Only your email is sent; your voice and text never leave this Mac."
+        if self.mode == CONFIRM:
+            return f"Enter the 6-digit code we sent to {self.email}."
+        if self.mode == SIGN_IN:
+            return "Welcome back. Sign in with your email and password."
+        if self.mode == RESET:
+            return f"Enter the 6-digit code we sent to {self.email} and a new password."
+        return f"Signed in as {self.email}. Utter stays signed in, even offline."
+
+    def fields(self) -> Fields:
+        if self.mode in (CREATE, SIGN_IN):
+            return Fields(email=True, password=True)
+        if self.mode == CONFIRM:
+            return Fields(code=True)
+        if self.mode == RESET:
+            return Fields(code=True, password=True)
+        return Fields()
+
+    def password_placeholder(self) -> str:
+        return "New password (8+ characters)" if self.mode in (CREATE, RESET) else "Password"
+
+    def submit_title(self) -> Optional[str]:
+        return {CREATE: "Create Account", CONFIRM: "Verify", SIGN_IN: "Sign In",
+                RESET: "Set New Password"}.get(self.mode)
+
+    def links(self) -> List[Tuple[str, str]]:
+        if self.mode == CREATE:
+            return [("I already have an account", GO_SIGN_IN)]
+        if self.mode == CONFIRM:
+            return [("Send the code again", RESEND), ("Use a different email", GO_CREATE)]
+        if self.mode == SIGN_IN:
+            return [("Forgot password?", FORGOT), ("Create an account", GO_CREATE)]
+        if self.mode == RESET:
+            return [("Send the code again", FORGOT), ("Back to sign in", GO_SIGN_IN)]
+        return [("Use a different account", SIGN_OUT)]
+
+    @property
+    def done(self) -> bool:
+        return self.mode == DONE
+
+    # ---- Doing -------------------------------------------------------------------------
+
+    def switch(self, action: str) -> bool:
+        """Links that only change the form (no network). True if handled here."""
+        if action == GO_CREATE:
+            self.mode, self.error, self.info = CREATE, "", ""
+            return True
+        if action == GO_SIGN_IN:
+            self.mode, self.error, self.info = SIGN_IN, "", ""
+            return True
+        return False
+
+    def check(self, action: str, email: str = "", password: str = "", code: str = "") -> Optional[str]:
+        """What is wrong with the typed values before anything is sent (None: fine)."""
+        if action == FORGOT and self.mode == SIGN_IN:
+            return check_email(email)
+        if action != SUBMIT:
+            return None
+        if self.mode in (CREATE, SIGN_IN):
+            return check_email(email) or (check_password(password) if self.mode == CREATE
+                                          else (None if password else "Please enter your password."))
+        if self.mode == CONFIRM:
+            return check_code(code)
+        if self.mode == RESET:
+            return check_code(code) or check_password(password)
+        return None
+
+    def perform(self, action: str, email: str = "", password: str = "", code: str = "") -> Optional[Session]:
+        """Run one action against the server (blocking: call it off the main thread).
+        Updates mode/error/info; returns the Session when someone just signed in."""
+        self.error, self.info = "", ""
+        problem = self.check(action, email, password, code)
+        if problem:
+            self.error = problem
+            return None
+        if self.mode in (CREATE, SIGN_IN) or (action == FORGOT and self.mode == SIGN_IN):
+            self.email = email.strip()
+        try:
+            return self._perform(action, password, code)
+        except AuthError as e:
+            self.error = e.message
+            if e.code in ("user_already_exists", "email_exists") and self.mode == CREATE:
+                self.mode = SIGN_IN  # keep the email; just ask for the password
+            elif e.code == "email_not_confirmed" and self.mode == SIGN_IN:
+                self.mode = CONFIRM
+                try:
+                    self.auth.resend_signup_code(self.email)
+                    self.info = "We sent you a new code."
+                except AuthError:
+                    pass
+            return None
+
+    def _perform(self, action: str, password: str, code: str) -> Optional[Session]:
+        if action == SUBMIT and self.mode == CREATE:
+            session = self.auth.sign_up(self.email, password)
+            if session is None:
+                self.mode = CONFIRM
+                return None
+            return self._signed_in(session)
+        if action == SUBMIT and self.mode == CONFIRM:
+            return self._signed_in(self.auth.verify_signup(self.email, code))
+        if action == RESEND and self.mode == CONFIRM:
+            self.auth.resend_signup_code(self.email)
+            self.info = "Sent again. It can take a minute; check your spam folder too."
+            return None
+        if action == SUBMIT and self.mode == SIGN_IN:
+            return self._signed_in(self.auth.sign_in(self.email, password))
+        if action == FORGOT:
+            self.auth.send_password_reset(self.email)
+            self.mode = RESET
+            self.info = "If there is an account for this email, the code is on its way."
+            return None
+        if action == SUBMIT and self.mode == RESET:
+            return self._signed_in(self.auth.reset_password(self.email, code, password))
+        return None
+
+    def _signed_in(self, session: Session) -> Session:
+        self.mode = DONE
+        self.email = session.email or self.email
+        return session
+
+    def signed_out(self) -> None:
+        self.mode, self.error, self.info = SIGN_IN, "", ""
