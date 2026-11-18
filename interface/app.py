@@ -33,6 +33,9 @@ from engine.vocabulary import VocabularyStore, build_whisper_prompt, correct_tex
 from .clipboard import copy_text_to_pasteboard, get_general_pasteboard, paste_and_restore
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
 from .key_events import is_hold
+from . import login_item as login_item_module
+from .login_item import LoginItem
+from . import setup_flow
 from . import menu_icon
 from .menu_icon import MenuBarIcon
 from .overlay import VoiceAssistantOverlay
@@ -42,6 +45,8 @@ from .permissions import (
     open_settings_pane,
     check_accessibility_permission,
     request_missing_permissions,
+    turn_on_permission,
+    was_asked,
 )
 from .whatsapp_control import (
     WhatsAppActionResult,
@@ -180,17 +185,27 @@ class VoiceAssistantApp(rumps.App):
         self.word_list_item = rumps.MenuItem("Edit Word List…", callback=self.open_word_list)
         self.settings_item = rumps.MenuItem("Edit Settings…", callback=self.open_settings_file)
         self.log_item = rumps.MenuItem("Open Log", callback=self.open_log)
+        self.setup_item = rumps.MenuItem("Setup…", callback=self.show_setup)
+        self.login_menu_item = rumps.MenuItem("Start at Login", callback=self.toggle_start_at_login)
         # Set by main.py: the user's settings file and the log file
         self.settings_file: Optional[Path] = None
         self.missing_permissions: List[str] = []  # set by main.py; shown in the menu
         self.log_file: Optional[Path] = None
+        # Set by main.py: where setup and the permission asks are remembered (data folder)
+        self.setup_record: Optional[Path] = None
+        self.permissions_record: Optional[Path] = None
+        self.login_item = LoginItem()
+        self.welcome = None  # the open welcome window (interface/welcome_window.py), if any
+        self._refresh_login_menu()
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
 
         self.menu = [
             self.status_item,
             None,  # Separator
             self.toggle_item,
+            self.setup_item,
             self.permissions_item,
+            self.login_menu_item,
             self.word_list_item,
             self.settings_item,
             self.log_item,
@@ -243,6 +258,124 @@ class VoiceAssistantApp(rumps.App):
             rumps.alert("Hotkey Registration Error", str(e))
         except Exception as e:
             logger.error("Failed to start hotkey listener: %s", e)
+
+    def restart_hotkeys(self) -> None:
+        """Start listening for the hotkeys again: needed when Accessibility and Input
+        Monitoring are switched on while Utter runs (before, macOS gave it no key events)."""
+        logger.info("Permissions changed: restarting the hotkey listener.")
+        self.hotkey_manager.stop()
+        self.hotkey_manager.hold_to_talk = self.config.hotkeys.hold_to_talk
+        self.start_listeners()
+
+    def _refresh_missing_permissions(self) -> None:
+        self.missing_permissions = [p.name for p in get_all_permissions().values() if not p.granted]
+        if self.model_ready and self.is_running and not self.session_manager.is_listening:
+            self.status_item.title = self._ready_status_text()
+
+    # ---- Welcome window (first run) and start at login --------------------------------------
+
+    def schedule_setup(self, start_step: int = 0) -> None:
+        """Open the welcome window as soon as the app is running (called before run())."""
+        AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(lambda: self.show_setup(start_step=start_step))
+
+    def show_setup(self, _sender=None, start_step: int = 0) -> None:
+        if self.welcome is not None and self.welcome.is_visible:
+            self.welcome.show()
+            return
+        from .welcome_window import WelcomeWindow
+        login_on = self.login_item.status()
+        record = setup_flow.read_record(self.setup_record) if self.setup_record else {}
+        default_login = record.get("start_at_login", setup_flow.START_AT_LOGIN_DEFAULT)
+        try:
+            self.welcome = WelcomeWindow(
+                command_hotkey=self.config.hotkeys.command_mode,
+                dictation_hotkey=self.config.hotkeys.dictation_mode,
+                permissions=lambda: {k: p.granted for k, p in get_all_permissions().items()},
+                turn_on=self._setup_turn_on,
+                asked_before=lambda key: self._asked_before(key),
+                hotkeys_ready=self.restart_hotkeys,
+                restart=self.relaunch if self._can_relaunch() else None,
+                finish=self._setup_finished,
+                closed=self._setup_closed,
+                login_available=login_on != login_item_module.UNAVAILABLE,
+                start_at_login=(login_on == login_item_module.ON) or (
+                    login_on == login_item_module.OFF and not record.get("done") and default_login),
+                start_step=start_step,
+            )
+            self.welcome.show()
+            logger.info("[Setup] Welcome window shown.")
+        except Exception as e:
+            logger.error("Could not show the welcome window: %s", e, exc_info=True)
+            self.welcome = None
+
+    def _asked_before(self, key: str) -> bool:
+        if key == "microphone":
+            from .permissions import microphone_not_asked_yet
+            return not microphone_not_asked_yet()
+        name = setup_flow.PERMISSION_TEXT[key][0]
+        return was_asked(name, self.permissions_record)
+
+    def _setup_turn_on(self, key: str) -> None:
+        result = turn_on_permission(key, self.permissions_record)
+        logger.info("[Setup] %s: %s", setup_flow.PERMISSION_TEXT[key][0], result)
+
+    def _setup_finished(self, start_at_login: bool) -> None:
+        if self.login_item.available:
+            status = self.login_item.set_enabled(start_at_login)
+            if start_at_login and status == login_item_module.NEEDS_APPROVAL:
+                self.login_item.open_settings()
+        if self.setup_record is not None:
+            setup_flow.mark_setup_done(self.setup_record, start_at_login=start_at_login)
+        self._refresh_login_menu()
+        logger.info("[Setup] Finished (start at login: %s).", start_at_login)
+
+    def _setup_closed(self) -> None:
+        # Closed early counts as seen: it never opens by itself again (the menu has Setup…)
+        if self.setup_record is not None and setup_flow.setup_needed(self.setup_record):
+            setup_flow.mark_setup_done(self.setup_record)
+        self._refresh_missing_permissions()
+        self._refresh_login_menu()
+
+    def _refresh_login_menu(self) -> None:
+        status = self.login_item.status()
+        self.login_menu_item.state = 1 if status == login_item_module.ON else 0
+        self.login_menu_item.title = ("Start at Login (approve in System Settings)"
+                                      if status == login_item_module.NEEDS_APPROVAL else "Start at Login")
+
+    def toggle_start_at_login(self, _sender=None) -> None:
+        status = self.login_item.status()
+        if status == login_item_module.UNAVAILABLE:
+            rumps.alert("Start at Login", "This works only in Utter.app (this copy runs from the project folder).")
+            return
+        if status == login_item_module.NEEDS_APPROVAL:
+            self.login_item.open_settings()
+            return
+        new = self.login_item.set_enabled(status != login_item_module.ON)
+        if self.setup_record is not None:
+            setup_flow.write_record(self.setup_record, start_at_login=new == login_item_module.ON)
+        self._refresh_login_menu()
+
+    def _can_relaunch(self) -> bool:
+        from engine.config import running_as_app
+        return running_as_app()
+
+    def relaunch(self) -> None:
+        """Quit and open Utter again (macOS sometimes only applies Input Monitoring after a
+        restart); the welcome window reopens on the Try step."""
+        bundle = str(AppKit.NSBundle.mainBundle().bundlePath())
+        if not bundle.endswith(".app"):
+            return
+        if self.setup_record is not None:
+            setup_flow.write_record(self.setup_record, done=False, resume="try")
+        import os
+        # Wait until this Utter has exited (the one-at-a-time lock is released), then open it
+        subprocess.Popen(
+            ["/bin/sh", "-c", 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; open "$2"',
+             "sh", str(os.getpid()), bundle],
+            start_new_session=True,
+        )
+        logger.info("[Setup] Restarting Utter.")
+        self.quit_app()
 
     def toggle_service(self, sender: rumps.MenuItem) -> None:
         """Start or Stop the voice assistant."""

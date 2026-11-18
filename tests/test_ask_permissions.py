@@ -101,8 +101,21 @@ def test_startup_asks_only_when_running_as_the_app(monkeypatch, isolate_data_pat
     main_mod._instance_lock.close()
     monkeypatch.setattr(main_mod, "_instance_lock", None)
     monkeypatch.setattr(engine_config, "running_as_app", lambda: True)
+    shown = []
+    monkeypatch.setattr(main_mod.VoiceAssistantApp, "schedule_setup",
+                        lambda self, start_step=0: shown.append(start_step))
     app = main_mod.main(run_loop=False)
-    assert asked == ["permissions_asked.json"]  # the app asks macOS itself (once ever)
+    # First start of the app: the welcome window asks for each permission instead
+    assert asked == [] and shown == [0]
+    assert app.setup_record == isolate_data_paths.data_dir / "setup.json"
+    app.hotkey_manager.stop()
+    app.menu_icon.stop()
+    main_mod._instance_lock.close()
+    from interface import setup_flow
+    setup_flow.mark_setup_done(app.setup_record)
+    monkeypatch.setattr(main_mod, "_instance_lock", None)
+    app = main_mod.main(run_loop=False)
+    assert asked == ["permissions_asked.json"] and shown == [0]  # later starts: macOS asks (once ever)
     app.hotkey_manager.stop()
     app.menu_icon.stop()
     main_mod._instance_lock.close()

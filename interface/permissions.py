@@ -151,10 +151,7 @@ def ask_missing_once(permissions: Dict[str, PermissionItem], record_file: Path) 
     start. What was asked is remembered in record_file (in the data folder). If a permission
     is still missing later, Utter only says so in its menu; "Check Permissions" asks again.
     """
-    try:
-        asked_before = set(json.loads(record_file.read_text(encoding="utf-8")))
-    except (OSError, ValueError, TypeError):
-        asked_before = set()
+    asked_before = _read_asked(record_file)
     pending = {
         key: (replace(item, granted=True) if item.name in asked_before else item)
         for key, item in permissions.items()
@@ -167,6 +164,60 @@ def ask_missing_once(permissions: Dict[str, PermissionItem], record_file: Path) 
         except OSError as e:
             logger.warning("Could not remember which permissions were asked: %s", e)
     return asked
+
+
+def _read_asked(record_file: Optional[Path]) -> set:
+    if record_file is None:
+        return set()
+    try:
+        return set(json.loads(record_file.read_text(encoding="utf-8")))
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def was_asked(name: str, record_file: Optional[Path]) -> bool:
+    """macOS was already asked once for this permission (by ask_missing_once or setup)."""
+    return name in _read_asked(record_file)
+
+
+def microphone_not_asked_yet() -> bool:
+    try:
+        import AVFoundation
+        return AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(AVFoundation.AVMediaTypeAudio) == 0
+    except Exception:
+        return False
+
+
+def turn_on_permission(key: str, record_file: Optional[Path] = None,
+                       permissions: Optional[Dict[str, PermissionItem]] = None) -> str:
+    """
+    The welcome window's button for one permission. The first time, ask macOS (its own
+    window appears, and Utter is added to the list in System Settings); after that, open the
+    right page of System Settings instead (macOS never asks twice). Returns "asked",
+    "opened_settings" or "granted".
+    """
+    permissions = permissions if permissions is not None else get_all_permissions()
+    item = permissions[key]
+    if item.granted:
+        return "granted"
+    first_time = (microphone_not_asked_yet() if key == "microphone"
+                  else not was_asked(item.name, record_file))
+    if first_time:
+        only_this = {k: (p if k == key else replace(p, granted=True)) for k, p in permissions.items()}
+        if request_missing_permissions(only_this):
+            if record_file is not None:
+                try:
+                    record_file.parent.mkdir(parents=True, exist_ok=True)
+                    record_file.write_text(json.dumps(sorted(_read_asked(record_file) | {item.name})),
+                                           encoding="utf-8")
+                except OSError as e:
+                    logger.warning("Could not remember which permissions were asked: %s", e)
+            return "asked"
+    try:
+        subprocess.run(["open", item.deep_link_url], check=False)
+    except Exception as e:
+        logger.error("Failed to open System Settings pane %s: %s", item.settings_path, e)
+    return "opened_settings"
 
 
 def request_permissions_prompt() -> None:

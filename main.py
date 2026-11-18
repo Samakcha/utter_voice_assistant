@@ -21,6 +21,7 @@ import engine.config as engine_config
 from engine.data_folder import prepare_data_folder
 from interface import VoiceAssistantApp, format_permissions_report, get_all_permissions
 from interface.permissions import ASKED_FILE_NAME, ask_missing_once
+from interface import setup_flow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -184,11 +185,17 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
                 pass
             return None
 
-    # As the app, ask macOS for anything missing: its own prompts appear, and Utter is added
-    # to the lists in System Settings (the terminal version uses the terminal's permissions)
-    # (each one only once ever: no macOS window on every start)
-    if engine_config.running_as_app() and any(not p.granted for p in permissions.values()):
-        ask_missing_once(permissions, paths.data_dir / ASKED_FILE_NAME)
+    # As the app, the first start opens the welcome window, which asks for each permission
+    # itself. Later starts ask macOS for anything missing (its own prompts appear, and Utter is
+    # added to the lists in System Settings), each one only once ever. The terminal version
+    # uses the terminal's permissions.
+    setup_record = paths.data_dir / setup_flow.SETUP_FILE_NAME
+    asked_record = paths.data_dir / ASKED_FILE_NAME
+    first_run = engine_config.running_as_app() and setup_flow.setup_needed(setup_record)
+    if first_run:
+        logger.info("First start: showing the welcome window.")
+    elif engine_config.running_as_app() and any(not p.granted for p in permissions.values()):
+        ask_missing_once(permissions, asked_record)
 
     # Initialize Engine and Interface
     session_manager = SessionManager(config=config)
@@ -201,6 +208,10 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     app.missing_permissions = [p.name for p in permissions.values() if not p.granted]
     app.settings_file = settings_file
     app.log_file = log_file
+    app.setup_record = setup_record
+    app.permissions_record = asked_record
+    if first_run:
+        app.schedule_setup(start_step=setup_flow.resume_step(setup_record))
 
     # 5. Start Global Hotkeys and Run App
     app.start_listeners()
