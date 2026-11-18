@@ -135,3 +135,24 @@ def test_log_shows_the_changes_when_redaction_is_off(tmp_path, pasted, caplog):
         _dictate(app, 1)
     lines = [r.getMessage() for r in caplog.records if "Cleanup" in r.getMessage()]
     assert lines == ["[Dictation] Cleanup: 1 correction: 'Monday' -> 'Tuesday'"]
+
+
+def test_dictation_is_never_lost_when_macos_blocks_pasting(tmp_path, pasted, monkeypatch, caplog):
+    """No Accessibility: macOS drops Utter's Cmd+V. The text must stay on the clipboard."""
+    from interface.clipboard import get_general_pasteboard
+    import AppKit
+    monkeypatch.setattr(app_mod, "_paste_allowed", lambda: False)
+    app = _make_app(tmp_path, ["Meet me at the station at six."])
+    shown = []
+
+    class RecordingOverlay:  # records which pop-up messages were shown
+        def __getattr__(self, name):
+            return lambda *a, **k: shown.append(name)
+    app.overlay = RecordingOverlay()
+    with caplog.at_level(logging.WARNING, logger=app_mod.logger.name):
+        _dictate(app, 1)
+    assert pasted == []  # no Cmd+V that macOS would throw away
+    assert app_mod.get_general_pasteboard().stringForType_(AppKit.NSPasteboardTypeString) == "Meet me at the station at six."
+    assert "show_dictation_copied" in shown and "show_dictation_inserted" not in shown
+    assert any("left on the clipboard" in r.getMessage() for r in caplog.records)
+    assert all("station" not in r.getMessage() for r in caplog.records)  # the words are never logged

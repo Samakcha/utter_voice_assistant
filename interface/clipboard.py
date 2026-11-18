@@ -68,6 +68,13 @@ def write_dictation_to_pasteboard(
     return pb.changeCount()
 
 
+def copy_text_to_pasteboard(text: str, pasteboard: Optional[AppKit.NSPasteboard] = None) -> None:
+    """Leave text on the clipboard as normal text (kept, not restored), for the user to paste."""
+    pb = pasteboard or get_general_pasteboard()
+    pb.clearContents()
+    pb.setString_forType_(text, AppKit.NSPasteboardTypeString)
+
+
 def restore_pasteboard_snapshot(
     snapshot: ClipboardSnapshot,
     expected_change_count: int,

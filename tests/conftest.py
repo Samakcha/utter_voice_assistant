@@ -101,6 +101,10 @@ def global_safety_net(monkeypatch):
     monkeypatch.setattr("interface.whatsapp_control.get_general_pasteboard", lambda: test_pasteboard)
     monkeypatch.setattr("interface.app.get_general_pasteboard", lambda: test_pasteboard)
 
+    # 5b. Pasting is allowed in tests unless a test says otherwise (the shell running the tests
+    # may not have Accessibility; dictation tests check what gets pasted)
+    monkeypatch.setattr("interface.app._paste_allowed", lambda: True)
+
 
 # 7. Real personal word list: tests must not depend on (or see) the user's own names.
 @pytest.fixture(autouse=True)

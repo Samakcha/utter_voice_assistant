@@ -30,7 +30,7 @@ from engine.session import SessionManager
 from engine.stop_phrases import detect_stop_phrase, validate_stop_phrases
 from engine.transcriber import BaseTranscriber
 from engine.vocabulary import VocabularyStore, build_whisper_prompt, correct_text, strip_prompt_echo
-from .clipboard import get_general_pasteboard, paste_and_restore
+from .clipboard import copy_text_to_pasteboard, get_general_pasteboard, paste_and_restore
 from .hotkeys import HotkeyManager, HotkeyRegistrationError
 from .key_events import is_hold
 from . import menu_icon
@@ -40,6 +40,7 @@ from .permissions import (
     format_permissions_report,
     get_all_permissions,
     open_settings_pane,
+    check_accessibility_permission,
     request_missing_permissions,
 )
 from .whatsapp_control import (
@@ -50,6 +51,12 @@ from .whatsapp_control import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _paste_allowed() -> bool:
+    """macOS lets Utter press ⌘V for you only with Accessibility; without it the keystroke is
+    silently dropped (and restoring the old clipboard would then lose the dictation)."""
+    return check_accessibility_permission()
 
 
 def run_on_main_thread(fn, *args):
@@ -944,6 +951,24 @@ class VoiceAssistantApp(rumps.App):
                     logger.debug("Failed to delete WhatsApp dictation audio: %s", e)
         else:
             display_text = formatted.text
+
+        if not _paste_allowed():
+            # Never lose dictation: leave it on the clipboard and say so, instead of a ⌘V that
+            # macOS would drop followed by putting the old clipboard back.
+            def _copy_instead():
+                try:
+                    copy_text_to_pasteboard(formatted.text)
+                except Exception as e:
+                    logger.error("Could not copy the dictation to the clipboard: %s", e)
+                self._restore_idle_ui()
+                if self.overlay is not None:
+                    self.overlay.show_dictation_copied()
+                logger.warning(
+                    "[Dictation Complete] Not pasted: Accessibility is not granted, so macOS would block "
+                    "the paste. %d words left on the clipboard instead (press Cmd+V).", formatted.word_count,
+                )
+            run_on_main_thread(_copy_instead)
+            return
 
         t_paste_0 = time.perf_counter()
 

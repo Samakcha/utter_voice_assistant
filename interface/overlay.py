@@ -342,6 +342,10 @@ class VoiceAssistantOverlay:
         """Display empty note feedback: 'Nothing to save'; auto-fades after ~2.0s."""
         self._show_content("Nothing to save", auto_dismiss_sec=2.0)
 
+    def show_dictation_copied(self) -> None:
+        """Pasting was blocked (no Accessibility): the text is on the clipboard instead; ~4.5s."""
+        self._show_content("📋 Copied: press ⌘V to paste (Utter needs Accessibility)", auto_dismiss_sec=4.5)
+
     def show_note_failed_copied(self, reason: str) -> None:
         """Display failure message: 'Couldn't save note: <reason>. Text copied to clipboard.'; auto-fades after 3.5s."""
         self._show_content(f"⚠️ Couldn't save note: {reason}. Text copied to clipboard.", auto_dismiss_sec=3.5)

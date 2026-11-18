@@ -133,6 +133,7 @@ The whole normalized utterance must match a command's grammar: lowercase, punctu
 - The app saves **all** pasteboard items and types, writes the dictated text marked as transient/concealed (so clipboard managers skip it), waits for Control and Option to be physically released (up to 500 ms), posts **Cmd+V from a Quartz event on the main thread**, waits `clipboard_restore_delay_ms` (400 ms, configurable), then restores the original clipboard, but only if the pasteboard `changeCount` shows nothing else changed it.
 - Esc, empty text and no-speech sessions never touch the clipboard.
 - The text lands in whatever app is frontmost when the session ends.
+- **Never lose dictation when pasting is blocked:** macOS only lets an app press ⌘V for you with Accessibility; without it the keystroke is silently dropped, and restoring the old clipboard afterwards would erase the dictation. So before pasting, Utter checks Accessibility; if it is missing, the text is left on the clipboard as normal text (not restored), the pop-up says "📋 Copied: press ⌘V to paste (Utter needs Accessibility)", and the log records the word count only (found 18 November 2026: commands worked while Accessibility counted as missing, but dictation could vanish).
 
 ### 6.7 Overlay (the pop-up at the top of the screen)
 - A small floating, **non-activating** panel at the top center of the screen: it never takes keyboard focus, appears over full-screen apps and all Spaces, and fades out on its own.
@@ -266,7 +267,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 830 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 831 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -304,7 +305,7 @@ voice-assistant/
   dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       830 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       831 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -353,7 +354,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 830 passing |
+| Automated tests | 831 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
