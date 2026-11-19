@@ -367,3 +367,44 @@ def test_a_text_field_being_edited_is_saved_when_switching_pages(settings):
     window.show_page("general")
     assert load_config(settings).notes.title_template == "Note {date}"
     window.close()
+
+
+# ---- The look (v0.8.2): the welcome window's style ---------------------------------------------
+
+def test_settings_window_is_always_dark_with_handwritten_page_titles(settings):
+    import AppKit
+    from interface import welcome_style as ws
+    window, _ = _window(settings)
+    assert window.window.appearance().name() == AppKit.NSAppearanceNameDarkAqua
+    for page, title, _ in sm.PAGES:
+        window.show_page(page)
+        headings = [v for v in window._doc.subviews() if isinstance(v, ws.HandTitle)]
+        assert [h.stringValue() for h in headings] == [title]
+        assert window._scroll.contentView().bounds().origin.y == 0  # every page starts at its top
+    window.close()
+
+
+def test_switches_click_on_and_off_and_save(settings):
+    from interface import welcome_style as ws
+    window, events = _window(settings)
+    window.show_page("dictation")
+    switch = window.toggles[("cleanup", "repeats")]
+    assert isinstance(switch, ws.Switch) and switch.state() == 1
+    switch.performClick_(None)  # a click flips it and saves
+    assert switch.state() == 0 and load_config(settings).cleanup.repeats is False and "saved" in events
+    switch.performClick_(None)
+    assert switch.state() == 1 and load_config(settings).cleanup.repeats is True
+    window.close()
+
+
+def test_shortcut_key_cap_shows_it_is_listening(settings):
+    from interface import welcome_style as ws
+    window, _ = _window(settings)
+    window.show_page("shortcuts")
+    cap = window.shortcut_buttons["dictation_mode"]
+    assert isinstance(cap, ws.PillButton) and cap.style == "key"
+    window.record_shortcut("dictation_mode")
+    assert cap.title() == "Press keys…"
+    window._stop_recording()
+    assert cap.title() == "⌃⌥D"
+    window.close()

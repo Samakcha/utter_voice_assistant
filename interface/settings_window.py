@@ -1,6 +1,7 @@
 """
 The Settings window (menu bar → Settings…): a sidebar of pages, each a list of grouped
-rows in the style of macOS System Settings. What each row means and allows lives in
+rows, laid out like macOS System Settings and drawn in Utter's own look (always dark, purple,
+handwritten page titles: interface/welcome_style.py, shared with the welcome window). What each row means and allows lives in
 interface/settings_model.py; this file only draws it. Main thread only.
 
 Every change is saved the moment it is made (switches, menus, a recorded shortcut, a text
@@ -14,6 +15,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import AppKit
 
 from . import settings_model as sm
+from . import welcome_style as ws
 from .settings_model import SettingsModel
 from .setup_flow import format_hotkey
 from .welcome_window import UtterSetupWindow, _Action, _Delegate, _label, _rect, _shared_app
@@ -26,6 +28,7 @@ PAD = 28.0
 ROW_PAD = 12.0
 CONTROL_W = 190.0
 STATUS_H = 34.0
+TITLEBAR_H = 30.0
 
 
 class _FlippedView(AppKit.NSView):
@@ -119,7 +122,7 @@ class SettingsWindow:
         self.version = version
         self.page = page
         self._targets: List[object] = []
-        self.toggles: Dict[Tuple[str, str], object] = {}  # (section, key) -> NSSwitch
+        self.toggles: Dict[Tuple[str, str], object] = {}  # (section, key) -> ws.Switch
         self.choices: Dict[Tuple[str, str], object] = {}
         self.shortcut_buttons: Dict[str, object] = {}
         self.text_fields: Dict[str, object] = {}
@@ -142,37 +145,35 @@ class SettingsWindow:
 
     def _build(self) -> None:
         style = (AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable
-                 | AppKit.NSWindowStyleMaskMiniaturizable)
+                 | AppKit.NSWindowStyleMaskMiniaturizable | AppKit.NSWindowStyleMaskFullSizeContentView)
         self.window = UtterSetupWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             _rect(0, 0, WIDTH, HEIGHT), style, AppKit.NSBackingStoreBuffered, False)
         self.window.setTitle_("Utter Settings")
+        self.window.setTitlebarAppearsTransparent_(True)
+        self.window.setTitleVisibility_(AppKit.NSWindowTitleHidden)
+        self.window.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
+        self.window.setBackgroundColor_(ws.BACKGROUND)
         self.window.setReleasedWhenClosed_(False)
         self._delegate = _Delegate.alloc().initWithCallback_(self._on_close)
         self.window.setDelegate_(self._delegate)
         content = self.window.contentView()
 
-        sidebar = AppKit.NSVisualEffectView.alloc().initWithFrame_(_rect(0, 0, SIDEBAR, HEIGHT))
-        sidebar.setMaterial_(AppKit.NSVisualEffectMaterialSidebar)
-        sidebar.setBlendingMode_(AppKit.NSVisualEffectBlendingModeBehindWindow)
+        sidebar = ws.SidebarBackdrop.alloc().initWithFrame_(_rect(0, 0, SIDEBAR, HEIGHT))
         content.addSubview_(sidebar)
-        line = AppKit.NSBox.alloc().initWithFrame_(_rect(SIDEBAR, 0, 1, HEIGHT))
-        line.setBoxType_(AppKit.NSBoxSeparator)
-        content.addSubview_(line)
+        sidebar.addSubview_(ws.icon_tile(_rect(14, HEIGHT - 96, 48, 48)))
+        sidebar.addSubview_(ws.hand_title([("Utter", None)], _rect(62, HEIGHT - 98, SIDEBAR - 70, 50), 34,
+                                          align="left"))
 
-        self._selection = AppKit.NSBox.alloc().initWithFrame_(_rect(10, 0, SIDEBAR - 20, 30))
-        self._selection.setBoxType_(AppKit.NSBoxCustom)
-        self._selection.setBorderWidth_(0)
-        self._selection.setCornerRadius_(6)
-        self._selection.setFillColor_(AppKit.NSColor.controlAccentColor())
+        self._selection = ws.Selection.alloc().initWithFrame_(_rect(12, 0, SIDEBAR - 24, 32))
         sidebar.addSubview_(self._selection)
-        y = HEIGHT - 24
+        y = HEIGHT - 128
         for page, title, symbol in sm.PAGES:
-            y -= 32
-            button = AppKit.NSButton.alloc().initWithFrame_(_rect(10, y, SIDEBAR - 20, 30))
+            y -= 36
+            button = AppKit.NSButton.alloc().initWithFrame_(_rect(12, y, SIDEBAR - 24, 32))
             button.setBordered_(False)
             button.setTitle_("  " + title)
             button.setAlignment_(AppKit.NSTextAlignmentLeft)
-            button.setFont_(AppKit.NSFont.systemFontOfSize_(13))
+            button.setFont_(ws.ui_font(13.5))
             image = _symbol(symbol)
             if image is not None:
                 image.setTemplate_(True)
@@ -183,15 +184,20 @@ class SettingsWindow:
             sidebar.addSubview_(button)
             self.sidebar_buttons[page] = button
 
-        right = SIDEBAR + 1
+        right = SIDEBAR
+        # below the (transparent) title bar; macOS's own automatic inset for it only applied
+        # to the first page shown, so the pages started at different heights
         self._scroll = AppKit.NSScrollView.alloc().initWithFrame_(
-            _rect(right, STATUS_H, WIDTH - right, HEIGHT - STATUS_H))
+            _rect(right, STATUS_H + 1, WIDTH - right, HEIGHT - STATUS_H - 1 - TITLEBAR_H))
+        self._scroll.setAutomaticallyAdjustsContentInsets_(False)
         self._scroll.setHasVerticalScroller_(True)
         self._scroll.setAutohidesScrollers_(True)
         self._scroll.setDrawsBackground_(False)
         self._scroll.setBorderType_(AppKit.NSNoBorder)
         content.addSubview_(self._scroll)
-        self._status = _label("", _rect(right + PAD, 8, WIDTH - right - 2 * PAD, 20), size=12)
+        content.addSubview_(ws.divider(_rect(right, STATUS_H, WIDTH - right, 1)))
+        self._status = ws.text_label("", _rect(right + PAD, 9, WIDTH - right - 2 * PAD, 18), ws.ui_font(12.5),
+                                     ws.TEXT_DIM)
         content.addSubview_(self._status)
         self.show_page(self.page)
 
@@ -205,75 +211,67 @@ class SettingsWindow:
         self.text_fields, self.text_areas, self.buttons = {}, {}, {}
         for name, button in self.sidebar_buttons.items():
             selected = name == page
-            color = AppKit.NSColor.whiteColor() if selected else AppKit.NSColor.labelColor()
+            color = ws.TEXT if selected else ws.TEXT_DIM
             title = button.title()
             button.setAttributedTitle_(AppKit.NSAttributedString.alloc().initWithString_attributes_(
                 title, {AppKit.NSForegroundColorAttributeName: color,
-                        AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(13)}))
+                        AppKit.NSFontAttributeName: ws.ui_font(13.5, AppKit.NSFontWeightSemibold if selected
+                                                               else AppKit.NSFontWeightRegular)}))
             button.setContentTintColor_(color)
             if selected:
                 self._selection.setFrame_(button.frame())
-        width = WIDTH - SIDEBAR - 1
+        width = WIDTH - SIDEBAR
         doc = _FlippedView.alloc().initWithFrame_(_rect(0, 0, width, 100))
         self._doc = doc
-        self._y = PAD - 6
+        self._y = 4.0
         self._width = width - 2 * PAD
         title = dict((p, t) for p, t, _ in sm.PAGES)[page]
-        heading = _label(title, _rect(PAD, self._y, self._width, 28), size=20, weight=AppKit.NSFontWeightBold)
-        doc.addSubview_(heading)
-        self._y += 40
+        doc.addSubview_(ws.hand_title([(title, "swash")], _rect(PAD - 2, self._y - 4, self._width, 58), 42,
+                                      align="left"))
+        self._y += 62
         getattr(self, f"_page_{page}")()
-        doc.setFrameSize_(AppKit.NSMakeSize(width, max(self._y + PAD, HEIGHT - STATUS_H)))
+        visible = float(self._scroll.contentSize().height)
+        doc.setFrameSize_(AppKit.NSMakeSize(width, max(self._y + PAD, visible)))
         self._scroll.setDocumentView_(doc)
-        doc.scrollPoint_(AppKit.NSMakePoint(0, 0))
+        # every page starts at its top (the document is flipped: y = 0 is the top)
+        self._scroll.contentView().scrollToPoint_(AppKit.NSMakePoint(0, 0))
+        self._scroll.reflectScrolledClipView_(self._scroll.contentView())
         self.say("")
 
     # ---- Rows -----------------------------------------------------------------------------
 
     def _group(self, rows: List[Callable[[float], Tuple[object, float]]], header: str = "") -> None:
-        """A rounded box of rows; each row builder gets the row width and returns (view, height)."""
+        """A rounded card of rows; each row builder gets the row width and returns (view, height)."""
         if header:
             self._doc.addSubview_(_label(header, _rect(PAD + 4, self._y, self._width, 18), size=12,
-                                         weight=AppKit.NSFontWeightSemibold,
-                                         color=AppKit.NSColor.secondaryLabelColor()))
+                                         weight=AppKit.NSFontWeightSemibold, color=ws.TEXT_DIM))
             self._y += 22
         built = [row(self._width) for row in rows]
         height = sum(h for _, h in built)
-        box = AppKit.NSBox.alloc().initWithFrame_(_rect(PAD, self._y, self._width, height))
-        box.setBoxType_(AppKit.NSBoxCustom)
-        box.setCornerRadius_(8)
-        box.setBorderWidth_(1)
-        box.setBorderColor_(AppKit.NSColor.separatorColor())
-        box.setFillColor_(AppKit.NSColor.colorWithName_dynamicProvider_(None, _group_fill)
-                          if hasattr(AppKit.NSColor, "colorWithName_dynamicProvider_")
-                          else AppKit.NSColor.controlBackgroundColor())
-        box.setContentViewMargins_(AppKit.NSMakeSize(0, 0))
+        box = ws.card(_rect(PAD, self._y, self._width, height), radius=14)
         inner = _FlippedView.alloc().initWithFrame_(_rect(0, 0, self._width, height))
-        box.setContentView_(inner)
+        box.addSubview_(inner)
         y = 0.0
         for index, (view, h) in enumerate(built):
             view.setFrameOrigin_(AppKit.NSMakePoint(0, y))
             inner.addSubview_(view)
             if index:
-                sep = AppKit.NSBox.alloc().initWithFrame_(_rect(ROW_PAD, y, self._width - 2 * ROW_PAD, 1))
-                sep.setBoxType_(AppKit.NSBoxSeparator)
-                inner.addSubview_(sep)
+                inner.addSubview_(ws.divider(_rect(ROW_PAD + 2, y, self._width - 2 * ROW_PAD - 4, 1)))
             y += h
         self._doc.addSubview_(box)
         self._y += height + 18
 
     def _texts(self, row, title: str, detail: str, width: float):
         """Title and grey detail on the left of a row; returns the row height."""
-        t = _label(title, _rect(ROW_PAD, 0, width, 18), size=13)
+        t = _label(title, _rect(ROW_PAD, 0, width, 18), size=13.5, color=ws.TEXT)
         th = _text_height(t, width)
         h = ROW_PAD + th
         d = None
         if detail:
-            d = _label(detail, _rect(ROW_PAD, 0, width, 16), size=11,
-                       color=AppKit.NSColor.secondaryLabelColor())
+            d = _label(detail, _rect(ROW_PAD, 0, width, 16), size=11.5, color=ws.TEXT_DIM)
             dh = _text_height(d, width)
             h += 2 + dh
-        h = max(h + ROW_PAD, 44.0)
+        h = max(h + ROW_PAD, 48.0)
         top = (h - (th + (2 + dh if d else 0))) / 2
         t.setFrame_(_rect(ROW_PAD, top, width, th))
         row.addSubview_(t)
@@ -293,13 +291,10 @@ class SettingsWindow:
         return build
 
     def _toggle(self, toggle: sm.Toggle):
-        switch = AppKit.NSSwitch.alloc().initWithFrame_(_rect(0, 0, 38, 22))
-        switch.setState_(AppKit.NSControlStateValueOn if sm.toggle_value(self.model.config, toggle.section, toggle.key)
-                         else AppKit.NSControlStateValueOff)
-        switch.setTarget_(self._target(lambda: self._toggled(toggle)))
-        switch.setAction_("fire:")
+        switch = ws.switch(_rect(0, 0, 44, 26), sm.toggle_value(self.model.config, toggle.section, toggle.key),
+                           self._target(lambda: self._toggled(toggle)))
         self.toggles[(toggle.section, toggle.key)] = switch
-        return self._row_with(toggle.title, toggle.detail, switch, 38, 22)
+        return self._row_with(toggle.title, toggle.detail, switch, 44, 26)
 
     def _choice(self, choice: sm.Choice):
         popup = AppKit.NSPopUpButton.alloc().initWithFrame_pullsDown_(_rect(0, 0, 150, 26), False)
@@ -312,11 +307,7 @@ class SettingsWindow:
         return self._row_with(choice.title, choice.detail, popup, 150, 26)
 
     def _action_button(self, name: str, title: str, callback, primary: bool = False):
-        button = AppKit.NSButton.alloc().initWithFrame_(_rect(0, 0, 150, 28))
-        button.setTitle_(title)
-        button.setBezelStyle_(AppKit.NSBezelStyleRounded)
-        button.setTarget_(self._target(callback))
-        button.setAction_("fire:")
+        button = ws.pill_button(title, _rect(0, 0, 150, 32), self._target(callback), style="ghost")
         if primary:
             button.setKeyEquivalent_("\r")
         self.buttons[name] = button
@@ -324,10 +315,20 @@ class SettingsWindow:
 
     def _button_row(self, name: str, title: str, detail: str, button_title: str, callback, width: float = 150):
         button = self._action_button(name, button_title, callback)
-        return self._row_with(title, detail, button, width, 28)
+        return self._row_with(title, detail, button, width, 32)
 
     def _text_row(self, name: str, title: str, detail: str, value: str, placeholder: str, on_commit):
-        field = AppKit.NSTextField.alloc().initWithFrame_(_rect(0, 0, 240, 24))
+        box = ws.card(_rect(0, 0, 240, 32), radius=10, fill=ws.rgb(255, 255, 255, 0.06),
+                      edge=ws.rgb(255, 255, 255, 0.14))
+        field = AppKit.NSTextField.alloc().initWithFrame_(_rect(10, 7, 220, 18))
+        field.setAutoresizingMask_(AppKit.NSViewWidthSizable)
+        field.setBezeled_(False)
+        field.setBordered_(False)
+        field.setDrawsBackground_(False)
+        field.setFocusRingType_(AppKit.NSFocusRingTypeNone)
+        field.setFont_(ws.ui_font(13.5))
+        field.setTextColor_(ws.TEXT)
+        box.addSubview_(field)
         field.setStringValue_(value)
         field.setPlaceholderString_(placeholder)
         field.cell().setSendsActionOnEndEditing_(True)
@@ -337,30 +338,39 @@ class SettingsWindow:
         self.text_fields[name] = field
         self._field_values = getattr(self, "_field_values", {})
         self._field_values[name] = value
-        return self._row_with(title, detail, field, 240, 24)
+        return self._row_with(title, detail, box, 240, 32)
 
     def _text_area(self, name: str, title: str, detail: str, value: str, on_save, height: float = 140):
         def build(width):
             row = _FlippedView.alloc().initWithFrame_(_rect(0, 0, width, 100))
             th = self._texts(row, title, detail, width - 2 * ROW_PAD - 120)
-            scroll = AppKit.NSScrollView.alloc().initWithFrame_(_rect(ROW_PAD, th, width - 2 * ROW_PAD, height))
+            box = ws.card(_rect(ROW_PAD, th, width - 2 * ROW_PAD, height), radius=10,
+                          fill=ws.rgb(255, 255, 255, 0.05), edge=ws.rgb(255, 255, 255, 0.14))
+            scroll = AppKit.NSScrollView.alloc().initWithFrame_(_rect(1, 1, width - 2 * ROW_PAD - 2, height - 2))
             scroll.setHasVerticalScroller_(True)
-            scroll.setBorderType_(AppKit.NSBezelBorder)
-            text = AppKit.NSTextView.alloc().initWithFrame_(_rect(0, 0, width - 2 * ROW_PAD - 4, height))
-            text.setFont_(AppKit.NSFont.systemFontOfSize_(13))
+            scroll.setAutohidesScrollers_(True)
+            scroll.setBorderType_(AppKit.NSNoBorder)
+            scroll.setDrawsBackground_(False)
+            text = AppKit.NSTextView.alloc().initWithFrame_(_rect(0, 0, width - 2 * ROW_PAD - 6, height - 2))
+            text.setDrawsBackground_(False)
+            text.setTextColor_(ws.TEXT)
+            text.setInsertionPointColor_(ws.LAVENDER)
+            text.setFont_(ws.ui_font(13.5))
             text.setRichText_(False)
             text.setAutomaticQuoteSubstitutionEnabled_(False)
             text.setAutomaticSpellingCorrectionEnabled_(False)
             text.setAutomaticTextReplacementEnabled_(False)
             text.setAutomaticDashSubstitutionEnabled_(False)
-            text.setTextContainerInset_(AppKit.NSMakeSize(4, 6))
+            text.setTextContainerInset_(AppKit.NSMakeSize(6, 8))
             text.setString_(value)
+            text.setTextColor_(ws.TEXT)
             text.setVerticallyResizable_(True)
             text.textContainer().setWidthTracksTextView_(True)
             scroll.setDocumentView_(text)
-            row.addSubview_(scroll)
+            box.addSubview_(scroll)
+            row.addSubview_(box)
             save = self._action_button(f"save_{name}", "Save", lambda: self._save_area(name, on_save))
-            save.setFrame_(_rect(width - ROW_PAD - 100, (th - 28) / 2, 100, 28))
+            save.setFrame_(_rect(width - ROW_PAD - 90, (th - 32) / 2, 90, 32))
             row.addSubview_(save)
             self.text_areas[name] = (text, on_save)
             self._saved_areas[name] = value
@@ -370,18 +380,13 @@ class SettingsWindow:
         return build
 
     def _shortcut(self, which: str, title: str, detail: str):
-        button = AppKit.NSButton.alloc().initWithFrame_(_rect(0, 0, 130, 28))
-        button.setBezelStyle_(AppKit.NSBezelStyleRounded)
-        button.setTitle_(format_hotkey(getattr(self.model.config.hotkeys, which)))
-        button.setFont_(AppKit.NSFont.systemFontOfSize_weight_(14, AppKit.NSFontWeightMedium))
-        button.setTarget_(self._target(lambda: self.record_shortcut(which)))
-        button.setAction_("fire:")
+        button = ws.pill_button(format_hotkey(getattr(self.model.config.hotkeys, which)), _rect(0, 0, 130, 34),
+                                self._target(lambda: self.record_shortcut(which)), style="key")
         self.shortcut_buttons[which] = button
-        return self._row_with(title, detail, button, 130, 28)
+        return self._row_with(title, detail, button, 130, 34)
 
     def _info(self, title: str, detail: str, value: str):
-        label = _label(value, _rect(0, 0, 150, 18), size=13, color=AppKit.NSColor.secondaryLabelColor(),
-                       align=AppKit.NSTextAlignmentRight)
+        label = _label(value, _rect(0, 0, 150, 18), size=13.5, color=ws.TEXT_DIM, align=AppKit.NSTextAlignmentRight)
         return self._row_with(title, detail, label, 150, 18)
 
     def _find(self, items, section, key):
@@ -413,13 +418,10 @@ class SettingsWindow:
                                      "Waiting for your OK in System Settings → General → Login Items.",
                                      "Open Settings", self._cb["open_login_settings"])
         else:
-            switch = AppKit.NSSwitch.alloc().initWithFrame_(_rect(0, 0, 38, 22))
-            switch.setState_(AppKit.NSControlStateValueOn if status == "on" else AppKit.NSControlStateValueOff)
-            switch.setTarget_(self._target(self._login_toggled))
-            switch.setAction_("fire:")
+            switch = ws.switch(_rect(0, 0, 44, 26), status == "on", self._target(self._login_toggled))
             self.toggles[("general", "start_at_login")] = switch
             login = self._row_with("Start Utter when you log in",
-                                   "Utter waits in the menu bar, ready for your shortcuts.", switch, 38, 22)
+                                   "Utter waits in the menu bar, ready for your shortcuts.", switch, 44, 26)
         self._group([login])
         self._group([
             self._button_row("permissions", "Permissions",
@@ -430,7 +432,7 @@ class SettingsWindow:
         ])
         if self.version:
             self._doc.addSubview_(_label(f"Utter {self.version}", _rect(PAD + 4, self._y, self._width, 16),
-                                         size=11, color=AppKit.NSColor.tertiaryLabelColor()))
+                                         size=11, color=ws.TEXT_FAINT))
             self._y += 20
 
     def _page_shortcuts(self) -> None:
@@ -441,7 +443,7 @@ class SettingsWindow:
         ])
         self._doc.addSubview_(_label("Click a shortcut, then press the new keys (with ⌃ Control or ⌥ Option).",
                                      _rect(PAD + 4, self._y - 12, self._width, 16), size=11,
-                                     color=AppKit.NSColor.secondaryLabelColor()))
+                                     color=ws.TEXT_DIM))
         self._y += 12
         self._group([self._t("hotkeys", "hold_to_talk"), self._c("timeouts", "command_silence_sec")])
 
@@ -461,7 +463,7 @@ class SettingsWindow:
         notes = self.model.config.notes
         self._doc.addSubview_(_label("Say “take a note” with the command shortcut, then speak your note.",
                                      _rect(PAD + 4, self._y - 8, self._width, 16), size=12,
-                                     color=AppKit.NSColor.secondaryLabelColor()))
+                                     color=ws.TEXT_DIM))
         self._y += 16
         self._group([
             self._text_row("notes_folder", "Notes folder", "Leave empty for the default folder.",
@@ -498,7 +500,7 @@ class SettingsWindow:
     def _page_privacy(self) -> None:
         self._doc.addSubview_(_label("Your voice and text never leave this Mac. Only your email is used, to sign in.",
                                      _rect(PAD + 4, self._y - 8, self._width, 16), size=12,
-                                     color=AppKit.NSColor.secondaryLabelColor()))
+                                     color=ws.TEXT_DIM))
         self._y += 16
         self._group([self._t("privacy", "keep_recordings"), self._t("privacy", "keep_whatsapp_audio"),
                      self._t("privacy", "keep_audio_when_whatsapp_front")])
@@ -541,8 +543,7 @@ class SettingsWindow:
     def say(self, message: str, error: bool = False) -> None:
         self.message, self.message_is_error = message, error
         self._status.setStringValue_(message)
-        self._status.setTextColor_(AppKit.NSColor.systemRedColor() if error
-                                   else AppKit.NSColor.secondaryLabelColor())
+        self._status.setTextColor_(ws.RED if error else ws.TEXT_DIM)
 
     def _result(self, problem: Optional[str], saved: str = "Saved.") -> bool:
         if problem:
@@ -695,10 +696,3 @@ class SettingsWindow:
     def is_visible(self) -> bool:
         return bool(self.window.isVisible())
 
-
-def _group_fill(appearance):
-    """The grouped rows' background: a little lighter than the window in dark mode, white in light."""
-    dark = appearance.bestMatchFromAppearancesWithNames_(
-        [AppKit.NSAppearanceNameAqua, AppKit.NSAppearanceNameDarkAqua]) == AppKit.NSAppearanceNameDarkAqua
-    return (AppKit.NSColor.colorWithWhite_alpha_(1.0, 0.05) if dark
-            else AppKit.NSColor.colorWithWhite_alpha_(1.0, 0.7))

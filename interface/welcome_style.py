@@ -283,6 +283,20 @@ class PillButton(AppKit.NSButton):
         pressed = self.isHighlighted()
         path = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             AppKit.NSInsetRect(bounds, 0.5, 0.5), h / 2 - 0.5, h / 2 - 0.5)
+        if self.style == "key":  # a shortcut: a key cap; purple while it waits for new keys
+            listening = self.title() == "Press keys…"
+            cap = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                AppKit.NSInsetRect(bounds, 0.5, 0.5), 9, 9)
+            (rgb(124, 92, 255, 0.22) if listening else (rgb(60, 59, 70) if pressed else KEYCAP)).setFill()
+            cap.fill()
+            (PURPLE_LIGHT if listening else rgb(255, 255, 255, 0.10)).setStroke()
+            cap.setLineWidth_(1.5 if listening else 1.0)
+            cap.stroke()
+            text = attributed(self.title(), ui_font(14 if listening else 16, AppKit.NSFontWeightSemibold),
+                              LAVENDER if listening else TEXT)
+            size = text.size()
+            text.drawAtPoint_(((bounds.size.width - size.width) / 2, (h - size.height) / 2))
+            return
         if self.style == "primary":
             alpha = 1.0 if enabled else 0.38
             top, bottom = (PURPLE_DEEP, PURPLE_DEEP) if pressed else (PURPLE_LIGHT, PURPLE)
@@ -336,7 +350,8 @@ class HandTitle(AppKit.NSView):
         gap = attributed(" ", font, TEXT).size().width  # a word space between pieces
         pad = self.size * 0.16  # and room for the pen circle on each side of a circled word
         pads = [pad if mark == "circle" else 0.0 for _, mark in pieces]
-        x = (bounds.size.width - sum(widths) - 2 * sum(pads) - gap * max(0, len(pieces) - 1)) / 2
+        total = sum(widths) + 2 * sum(pads) + gap * max(0, len(pieces) - 1)
+        x = 2.0 if getattr(self, "align", "center") == "left" else (bounds.size.width - total) / 2
         y = (bounds.size.height - height) / 2
         for (text, mark), drawn, width, space in zip(pieces, texts, widths, pads):
             x += space
@@ -350,6 +365,9 @@ class HandTitle(AppKit.NSView):
                 if self.burst:
                     for stroke in burst(cx + rx * 0.62, middle + ry * 0.78, self.size * 0.26):
                         stroke.stroke()
+            elif mark == "swash":
+                PURPLE.setStroke()
+                swash(x + 2, x + width * 0.96, y + height * 0.08, lift=2.5).stroke()
             elif mark == "underline":
                 PURPLE.setStroke()
                 swash(x + width * 0.50, x + width * 0.93, y + height * 0.07).stroke()
@@ -366,11 +384,13 @@ class HandTitle(AppKit.NSView):
         self.setNeedsDisplay_(True)
 
 
-def hand_title(pieces: Sequence[Tuple[str, Optional[str]]], frame, size: float, burst_marks: bool = False):
+def hand_title(pieces: Sequence[Tuple[str, Optional[str]]], frame, size: float, burst_marks: bool = False,
+               align: str = "center"):
     view = HandTitle.alloc().initWithFrame_(frame)
     view.pieces = list(pieces)
     view.size = size
     view.burst = burst_marks
+    view.align = align
     return view
 
 
@@ -482,3 +502,66 @@ class IconTile(AppKit.NSView):
 
 def icon_tile(frame):
     return IconTile.alloc().initWithFrame_(frame)
+
+
+class Switch(AppKit.NSButton):
+    """An on/off switch: purple when on. state() / setState_ like NSSwitch."""
+
+    def drawRect_(self, rect):
+        bounds = self.bounds()
+        w, h = 40.0, 24.0
+        x, y = (bounds.size.width - w) / 2, (bounds.size.height - h) / 2
+        on = self.state() == AppKit.NSControlStateValueOn
+        alpha = 1.0 if self.isEnabled() else 0.4
+        track = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            AppKit.NSMakeRect(x, y, w, h), h / 2, h / 2)
+        if on:
+            AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
+                PURPLE_LIGHT.colorWithAlphaComponent_(alpha), PURPLE.colorWithAlphaComponent_(alpha)
+            ).drawInBezierPath_angle_(track, -90)
+        else:
+            rgb(255, 255, 255, 0.14 * alpha).setFill()
+            track.fill()
+        knob = h - 4
+        kx = x + w - knob - 2 if on else x + 2
+        rgb(255, 255, 255, alpha).setFill()
+        AppKit.NSBezierPath.bezierPathWithOvalInRect_(AppKit.NSMakeRect(kx, y + 2, knob, knob)).fill()
+
+
+def switch(frame, on: bool, target):
+    view = Switch.alloc().initWithFrame_(frame)
+    view.setButtonType_(AppKit.NSButtonTypePushOnPushOff)
+    view.setBordered_(False)
+    view.setTitle_("")
+    view.setState_(AppKit.NSControlStateValueOn if on else AppKit.NSControlStateValueOff)
+    view.setTarget_(target)
+    view.setAction_("fire:")
+    return view
+
+
+class Selection(AppKit.NSView):
+    """The purple pill behind the chosen page in the sidebar."""
+
+    def drawRect_(self, rect):
+        path = AppKit.NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 10, 10)
+        AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(PURPLE_LIGHT, PURPLE).drawInBezierPath_angle_(
+            path, 0)
+
+
+class SidebarBackdrop(AppKit.NSView):
+    """The sidebar: a shade lighter than the window, with a soft purple hill at the bottom."""
+
+    def drawRect_(self, rect):
+        bounds = self.bounds()
+        w = bounds.size.width
+        rgb(28, 27, 36).setFill()
+        AppKit.NSRectFill(bounds)
+        path = AppKit.NSBezierPath.bezierPath()
+        path.moveToPoint_((-w * 0.2, 0))
+        path.curveToPoint_controlPoint1_controlPoint2_((w * 0.45, 64), (w * 0.1, 0), (w * 0.2, 64))
+        path.curveToPoint_controlPoint1_controlPoint2_((w * 1.2, 0), (w * 0.75, 64), (w * 0.95, 0))
+        path.closePath()
+        AppKit.NSGradient.alloc().initWithStartingColor_endingColor_(
+            rgb(118, 88, 255, 0.28), rgb(70, 40, 170, 0.06)).drawInBezierPath_angle_(path, -90)
+        rgb(255, 255, 255, 0.06).setFill()  # the edge, blended (NSRectFill would copy, not blend)
+        AppKit.NSBezierPath.fillRect_(AppKit.NSMakeRect(w - 1, 0, 1, bounds.size.height))
