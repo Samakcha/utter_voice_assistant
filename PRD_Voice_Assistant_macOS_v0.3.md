@@ -536,7 +536,7 @@ Decisions (17 November 2026): the name is **Utter**; built for the user's own Ma
 Decided 19 November 2026: free only. No Apple developer programme, no paid hosting.
 - **Built in v0.8.0 (waiting for the user's test):** clone and `./install.sh`, the model download, the optional certificate, README, MIT licence, privacy policy draft (6.19).
 - **Done in v0.8.1 (tested live by the user on 19 November 2026):** the redesigned welcome and sign-in window (6.16).
-- **Built in v0.8.2 (waiting for the user's test):** the Settings window in the same look (6.18).
+- **Done in v0.8.2 (tested live by the user on 19 November 2026):** the Settings window in the same look (6.18).
 - Later, optional: a GitHub Pages site, Continue with Google.
 
 ### Ongoing checks
