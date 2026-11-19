@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Product name:** Utter (chosen 17 November 2026)
-**Status:** v0.8.0 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15). v0.5.0 adds the first-run welcome window (permissions with live ticks, a try-it step) and start at login (6.16). v0.6.0 requires an Utter account: sign in once with email and password, through Supabase, so the number of users can be counted (6.17). v0.7.0 adds the Settings window: every everyday setting in one window, saved and used at once, with no file to edit (6.18); recording a new shortcut no longer makes macOS stop Utter (the key listener reads the keyboard layout on the main thread). v0.7.1 completes stage 5, the final checks: the voice detector runs with numpy instead of PyTorch, with identical results, so Utter.app shrinks from 1.38 GB to 0.64 GB and starts about 1 s sooner (10.2). v0.8.0 lets other people install Utter for free: they clone the repository and run `./install.sh`, which builds Utter.app on their own Mac (6.19).
+**Status:** v0.8.1 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15). v0.5.0 adds the first-run welcome window (permissions with live ticks, a try-it step) and start at login (6.16). v0.6.0 requires an Utter account: sign in once with email and password, through Supabase, so the number of users can be counted (6.17). v0.7.0 adds the Settings window: every everyday setting in one window, saved and used at once, with no file to edit (6.18); recording a new shortcut no longer makes macOS stop Utter (the key listener reads the keyboard layout on the main thread). v0.7.1 completes stage 5, the final checks: the voice detector runs with numpy instead of PyTorch, with identical results, so Utter.app shrinks from 1.38 GB to 0.64 GB and starts about 1 s sooner (10.2). v0.8.0 lets other people install Utter for free: they clone the repository and run `./install.sh`, which builds Utter.app on their own Mac (6.19). v0.8.1 redesigns the welcome and sign-in window from the user's mock-up: always dark, purple, handwritten titles (6.16).
 **Last updated:** 19 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -220,6 +220,7 @@ Milestone 3, stage 3: a new user gets through the permissions without help.
 6. **Try box and ⌘V:** Utter has no Edit menu (menu bar app), so the window handles ⌘V, ⌘C, ⌘X, ⌘A, ⌘Z and ⌘W itself; dictation types into the box with ⌘V like into any app. The box turns into "✓ It works!" as soon as text appears.
 7. **Start at login:** macOS's own Login Items (`SMAppService.mainAppService`, ServiceManagement loaded straight from the system, no extra package). Applied when the welcome is finished, and switchable any time with the menu item **Start at Login** (checkmark). If macOS needs approval it opens System Settings > General > Login Items. Only for Utter.app: the terminal version says so.
 8. **Checked:** 34 new automated tests (steps, records, ticks, stuck hints, hotkey restart once, try-it, login item with a fake macOS service, the window with fake permissions, the menu items). All four steps were rendered in light and dark mode and the layout checked. The built app (v0.5.0) starts and loads the new parts. The live first run is the user's test.
+9. **Look (v0.8.1, from the user's mock-up, 19 November 2026):** 760 × 500, **always dark** (whatever the Mac's setting), purple accents. Handwritten titles in **Caveat** (Google Fonts, SIL Open Font Licence, bundled in `assets/fonts` with its licence) with one word circled by a drawn pen stroke ("Welcome to (Utter)", "Give Utter (three) permissions", "Try (it)", "You're (all set)"; any title with "Utter" in it circles that), small purple handwritten side notes ("speak, type, control" with an arrow, "voice first on Mac", "just talk!", "happy talking!"), the drawn app icon with a soft glow, rounded cards for the shortcuts and the permissions (a round badge: number, purple for the next one, green ✓), key caps showing the real shortcuts, dark borderless fields, purple pill buttons with an arrow, step dots, and soft purple hills along the bottom. Only one "stuck" hint shows at a time, under the permission cards. Everything is drawn in `interface/welcome_style.py`; `welcome_window.py` places it; the steps and logic (`setup_flow.py`, `account_form.py`) are unchanged. Checked: every page and the sign-in window rendered and compared with the mock-up; 5 new tests (font and licence, always dark, step dots, circled titles, one hint at a time).
 
 ### 6.17 Utter accounts, required sign-in (`engine/account.py`, `interface/account_manager.py`, `account_form.py`, `keychain.py`)
 Decided 19 November 2026: everyone signs in once, so the number of users can be counted. Login is required; the service is Supabase (free plan); built before the settings window.
@@ -320,7 +321,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 999 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 1004 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -364,7 +365,7 @@ voice-assistant/
   dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, download_model, eval_rules, export_vad_weights, make_app_icon, make_certificate, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       999 tests; tests/data/eval_rules.csv (rule evaluation set), speech.wav (Mac voice, for the voice detector)
+  tests/                       1004 tests; tests/data/eval_rules.csv (rule evaluation set), speech.wav (Mac voice, for the voice detector)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -415,7 +416,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 999 passing |
+| Automated tests | 1004 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -503,7 +504,7 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 4. **Read-back of notes, sending a message by voice** (would need a confirmation overlay with Enter/Esc, and is high risk).
 5. **Model options** for lower-memory Macs, optional cloud models. (Rule-based dictation cleanup is built, 6.13.)
 6. **Choosing between ambiguous apps by voice** ("the first one") instead of saying the full name.
-7. **Welcome window redesign** (the user's request, 19 November 2026): the steps and logic stay (`setup_flow.py`, `account_form.py`); only the drawing in `welcome_window.py` changes.
+7. ~~Welcome window redesign~~ Done in v0.8.1 (6.16, item 9). The Settings window could take the same purple accent later.
 8. **Sign in with Apple / Google** as quicker alternatives to email and password.
 
 ## 15. Next steps: milestones
@@ -534,7 +535,8 @@ Decisions (17 November 2026): the name is **Utter**; built for the user's own Ma
 ### Milestone 4: Sharing Utter — in progress
 Decided 19 November 2026: free only. No Apple developer programme, no paid hosting.
 - **Built in v0.8.0 (waiting for the user's test):** clone and `./install.sh`, the model download, the optional certificate, README, MIT licence, privacy policy draft (6.19).
-- Later, optional: a GitHub Pages site, Continue with Google, restyling the welcome and Settings windows.
+- **Built in v0.8.1 (waiting for the user's test):** the redesigned welcome and sign-in window (6.16).
+- Later, optional: a GitHub Pages site, Continue with Google, the same look for the Settings window.
 
 ### Ongoing checks
 - Re-measure end of speech to action live with `large-v3-turbo` (fixed commands, app launch, WhatsApp search).

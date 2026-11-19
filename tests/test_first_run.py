@@ -438,3 +438,57 @@ def test_window_comes_in_front_of_other_apps(monkeypatch):
     assert calls == [("activate_ignoring_others", True), "key_and_front", "front_regardless"]
     window.window = real
     window.close()
+
+
+# ---- The look (v0.8.1): always dark, purple, handwritten titles in Caveat ---------------------
+
+def test_caveat_font_ships_with_its_licence_and_loads():
+    from interface import welcome_style as ws
+    from scripts import build_app
+    assert ws.FONT_PATH.is_file() and ws.FONT_PATH.parent.parent.name == "assets"
+    assert "assets" in build_app.APP_CODE  # so the font is inside Utter.app
+    licence = (ws.FONT_PATH.parent / "Caveat-OFL.txt").read_text(encoding="utf-8")
+    assert "SIL Open Font License" in licence
+    assert ws.register_fonts() and ws.register_fonts()  # twice is fine
+    assert ws.hand_font(40).familyName() == "Caveat"
+
+
+def test_welcome_window_is_always_dark():
+    import AppKit
+    window, _, _ = _window({"microphone": False, "accessibility": False, "input_monitoring": False})
+    assert window.window.appearance().name() == AppKit.NSAppearanceNameDarkAqua
+    window.close()
+
+
+def test_step_dots_follow_the_steps():
+    window, _, _ = _window({"microphone": True, "accessibility": True, "input_monitoring": True})
+    total = len(window.flow.steps)
+    assert (window.step_dots.current, window.step_dots.total) == (0, total)
+    window.next()
+    assert window.step_dots.current == 1 and not window.step_dots.isHidden()
+    window.close()
+
+
+def test_handwritten_titles_circle_the_right_word():
+    from interface import welcome_style as ws
+    import AppKit
+    title = ws.hand_title([("Welcome to", "underline"), ("Utter", "circle")], AppKit.NSMakeRect(0, 0, 600, 90), 60)
+    assert title.stringValue() == "Welcome to Utter"
+    title.setStringValue_("Sign in to Utter")
+    assert title.pieces == [("Sign in to ", None), ("Utter", "circle"), ("", None)]
+    assert title.stringValue() == "Sign in to Utter"
+    title.setStringValue_("Check your email")
+    assert title.pieces == [("Check your email", None)]
+
+
+def test_only_one_permission_hint_shows_at_a_time():
+    window, _, clock = _window({"microphone": False, "accessibility": False, "input_monitoring": False})
+    while window.flow.step_name != "permissions":
+        window.next()
+    for key in ("microphone", "accessibility", "input_monitoring"):
+        window.turn_on(key)
+    clock.now += 1000
+    window.tick()
+    shown = [key for key, (_mark, _button, hint) in window.rows.items() if not hint.isHidden()]
+    assert len(shown) == 1
+    window.close()

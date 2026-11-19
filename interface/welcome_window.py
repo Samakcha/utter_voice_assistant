@@ -19,13 +19,15 @@ import AppKit
 import objc
 
 from . import account_form as af
+from . import welcome_style as ws
 from . import setup_flow
 from .setup_flow import PERMISSION_ORDER, SetupFlow
 
 logger = logging.getLogger(__name__)
 
-WIDTH, HEIGHT = 560.0, 440.0
-MARGIN = 32.0
+WIDTH, HEIGHT = 760.0, 500.0
+MARGIN = 28.0
+NEXT_W = 190.0
 POLL_SEC = 0.5
 ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "utter-app-icon.png"
 
@@ -110,8 +112,8 @@ def _link_title(title: str):
     style = AppKit.NSMutableParagraphStyle.alloc().init()
     style.setAlignment_(AppKit.NSTextAlignmentCenter)
     return AppKit.NSAttributedString.alloc().initWithString_attributes_(title, {
-        AppKit.NSForegroundColorAttributeName: AppKit.NSColor.linkColor(),
-        AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(12.5),
+        AppKit.NSForegroundColorAttributeName: ws.LAVENDER,
+        AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_weight_(13.5, AppKit.NSFontWeightMedium),
         AppKit.NSParagraphStyleAttributeName: style,
     })
 
@@ -224,114 +226,155 @@ class WelcomeWindow:
         self.window.setTitlebarAppearsTransparent_(True)
         self.window.setTitleVisibility_(AppKit.NSWindowTitleHidden)
         self.window.setReleasedWhenClosed_(False)
+        # Always dark (the design), whatever the Mac's own setting
+        self.window.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
+        self.window.setBackgroundColor_(ws.BACKGROUND)
         self._delegate = _Delegate.alloc().initWithCallback_(self._on_close)
         self.window.setDelegate_(self._delegate)
         content = self.window.contentView()
+        content.addSubview_(ws.Backdrop.alloc().initWithFrame_(_rect(0, 0, WIDTH, HEIGHT)))
 
         builders = [("welcome", self._build_welcome), ("permissions", self._build_permissions),
                     ("try", self._build_try), ("finish", self._build_finish)]
         if self.account_form is not None:
             builders.insert(1, ("account", self._build_account))
         for name, build in builders:
-            page = AppKit.NSView.alloc().initWithFrame_(_rect(0, 64, WIDTH, HEIGHT - 64))
+            page = AppKit.NSView.alloc().initWithFrame_(_rect(0, 0, WIDTH, HEIGHT))
             build(page)
             page.setHidden_(True)
             content.addSubview_(page)
             self.pages[name] = page
 
-        self.step_label = _label("", _rect(MARGIN, 26, 150, 18), 12, color=AppKit.NSColor.secondaryLabelColor())
+        self.step_dots = ws.step_dots(_rect(MARGIN + 12, 40, 120, 14))
+        content.addSubview_(self.step_dots)
+        self.step_label = ws.text_label("", _rect(MARGIN + 104, 36, 140, 20), ws.ui_font(14), ws.TEXT_DIM)
         content.addSubview_(self.step_label)
-        self.next_button = _button("", _rect(WIDTH - MARGIN - 170, 20, 170, 32), self._target(self.next), primary=True)
+        self.next_button = ws.pill_button("", _rect(WIDTH - MARGIN - NEXT_W, 28, NEXT_W, 40),
+                                          self._target(self.next), style="primary", arrow=True)
+        self.next_button.setKeyEquivalent_("\r")
         content.addSubview_(self.next_button)
-        self.back_button = _button("Back", _rect(WIDTH - MARGIN - 170 - 110, 20, 100, 32), self._target(self.back))
+        self.back_button = ws.pill_button("Back", _rect(WIDTH - MARGIN - NEXT_W - 12 - 96, 30, 96, 36),
+                                          self._target(self.back), style="ghost")
         content.addSubview_(self.back_button)
 
-    def _title(self, page, text: str, y: float, centered: bool = False) -> None:
-        align = AppKit.NSTextAlignmentCenter if centered else AppKit.NSTextAlignmentLeft
-        page.addSubview_(_label(text, _rect(MARGIN, y, WIDTH - 2 * MARGIN, 34), 24,
-                                AppKit.NSFontWeightBold, align=align))
+    # Page pieces ---------------------------------------------------------------------------
+
+    def _heading(self, page, pieces, y: float, size: float = 50.0, burst: bool = False):
+        view = ws.hand_title(pieces, _rect(0, y, WIDTH, size * 1.45), size, burst_marks=burst)
+        page.addSubview_(view)
+        return view
+
+    def _subtitle(self, page, text: str, y: float, height: float = 44.0, size: float = 15.0):
+        view = ws.text_label(text, _rect(90, y, WIDTH - 180, height), ws.ui_font(size), ws.TEXT_DIM,
+                             align=AppKit.NSTextAlignmentCenter)
+        page.addSubview_(view)
+        return view
 
     def _build_welcome(self, page) -> None:
-        if ICON_PATH.is_file():
-            icon = AppKit.NSImageView.alloc().initWithFrame_(_rect((WIDTH - 88) / 2, 252, 88, 88))
-            icon.setImage_(AppKit.NSImage.alloc().initWithContentsOfFile_(str(ICON_PATH)))
-            page.addSubview_(icon)
-        self._title(page, "Welcome to Utter", 210, centered=True)
-        page.addSubview_(_label(
-            "Talk to your Mac. Utter types what you say and opens apps for you. "
-            "Your voice never leaves this Mac.",
-            _rect(70, 148, WIDTH - 140, 56), 13, color=AppKit.NSColor.secondaryLabelColor(),
-            align=AppKit.NSTextAlignmentCenter))
-        for y, key, text in ((106, self.dictation_key, "Dictation: type by speaking, in any text box"),
-                             (68, self.command_key, "Command: “open Safari”, “take a note”…")):
-            cap = _label(key, _rect(120, y, 76, 26), 15, AppKit.NSFontWeightSemibold,
-                         align=AppKit.NSTextAlignmentCenter)
-            cap.setWantsLayer_(True)
-            cap.setDrawsBackground_(True)
-            cap.setBackgroundColor_(AppKit.NSColor.quaternaryLabelColor())
-            cap.layer().setCornerRadius_(6)
-            page.addSubview_(cap)
-            page.addSubview_(_label(text, _rect(210, y + 3, 300, 20), 13))
-        page.addSubview_(_label("Tap a hotkey and speak; Utter stops when you stop talking. Esc cancels.",
-                                _rect(MARGIN, 26, WIDTH - 2 * MARGIN, 18), 12,
-                                color=AppKit.NSColor.secondaryLabelColor(), align=AppKit.NSTextAlignmentCenter))
+        page.addSubview_(ws.icon_tile(_rect((WIDTH - 88) / 2, 384, 88, 88)))
+        self._heading(page, [("Welcome to", "underline"), ("Utter", "circle")], 296, size=68, burst=True)
+        self._subtitle(page, "Talk to your Mac. Utter types what you say and opens apps for you.\n"
+                             "Your voice never leaves this Mac.", 238, 46)
+        card_x, card_w = (WIDTH - 470) / 2, 470
+        for y, key, bold, rest in ((174, self.dictation_key, "Dictation:", " type by speaking, in any text box"),
+                                   (118, self.command_key, "Command:", " “open Safari”, “take a note”…")):
+            row = ws.card(_rect(card_x, y, card_w, 48), radius=16)
+            row.addSubview_(ws.keycap(key, _rect(18, 8, 76, 32)))
+            row.addSubview_(ws.divider(_rect(112, 12, 1, 24)))
+            text = AppKit.NSMutableAttributedString.alloc().initWithAttributedString_(
+                ws.attributed(bold, ws.ui_font(15.5, AppKit.NSFontWeightSemibold), ws.TEXT))
+            text.appendAttributedString_(ws.attributed(rest, ws.ui_font(15.5), ws.TEXT))
+            label = ws.text_label("", _rect(130, 14, card_w - 140, 21), ws.ui_font(15.5))
+            label.setAttributedStringValue_(text)
+            row.addSubview_(label)
+            page.addSubview_(row)
+        page.addSubview_(ws.text_label("Tap a hotkey and speak; Utter stops when you stop talking. Esc cancels.",
+                                       _rect(MARGIN, 84, WIDTH - 2 * MARGIN, 20), ws.ui_font(13.5), ws.TEXT_DIM,
+                                       align=AppKit.NSTextAlignmentCenter))
+        # the handwritten side notes
+        page.addSubview_(ws.hand_note([("speak", 0), ("type", 14), ("control", 10)], _rect(30, 176, 120, 104),
+                                      size=27, tilt=8, strokes=[ws.swash(14, 66, 12, lift=2)]))
+        page.addSubview_(ws.strokes(_rect(0, 0, WIDTH, HEIGHT),
+                                    [ws.curved_arrow((96, 168), (104, 132), (card_x - 8, 142))]))
+        page.addSubview_(ws.hand_note([("voice", 0), ("first", 6), ("on Mac", -6)], _rect(622, 152, 120, 104),
+                                      size=27, tilt=8,
+                                      strokes=[ws.swash(4, 76, 14, lift=2), ws.swash(14, 54, 7, lift=1.2, width=2.2)]
+                                      + ws.burst(62, 84, 11, width=2.2)))
 
     def _build_permissions(self, page) -> None:
-        self._title(page, "Give Utter three permissions", 306)
-        page.addSubview_(_label(
-            "Press each button and switch Utter on in System Settings. "
-            "The ✓ appears here by itself; macOS only asks once.",
-            _rect(MARGIN, 266, WIDTH - 2 * MARGIN, 36), 13, color=AppKit.NSColor.secondaryLabelColor()))
+        self._heading(page, [("Give Utter", None), ("three", "circle"), ("permissions", None)], 372, size=46)
+        self._subtitle(page, "Press each button and switch Utter on in System Settings.\n"
+                             "The ✓ appears here by itself; macOS only asks once.", 318, 44, size=14)
+        card_x, card_w = (WIDTH - 560) / 2, 560
+        self.badges = {}
         for i, key in enumerate(PERMISSION_ORDER):
-            y = 196 - i * 88
+            y = 246 - i * 66
             row = self.flow.rows[key]
-            mark = _label("", _rect(MARGIN, y + 30, 30, 28), 20, AppKit.NSFontWeightBold)
-            page.addSubview_(mark)
-            page.addSubview_(_label(row.name, _rect(MARGIN + 36, y + 44, 320, 20), 14, AppKit.NSFontWeightSemibold))
-            page.addSubview_(_label(row.why, _rect(MARGIN + 36, y + 24, WIDTH - 2 * MARGIN - 36 - 140, 20), 12,
-                                    color=AppKit.NSColor.secondaryLabelColor()))
-            button = _button("", _rect(WIDTH - MARGIN - 130, y + 32, 130, 30),
-                             self._target(lambda k=key: self.turn_on(k)))
-            page.addSubview_(button)
-            hint = _label(row.stuck_hint(), _rect(MARGIN + 36, y - 12, WIDTH - 2 * MARGIN - 36, 34), 11,
-                          color=AppKit.NSColor.systemOrangeColor(), selectable=True)
+            panel = ws.card(_rect(card_x, y, card_w, 58), radius=16)
+            circle = ws.badge(_rect(16, 14, 30, 30))
+            panel.addSubview_(circle)
+            mark = ws.text_label("", _rect(16, 18, 30, 22), ws.ui_font(15, AppKit.NSFontWeightBold), ws.TEXT,
+                                 align=AppKit.NSTextAlignmentCenter)
+            panel.addSubview_(mark)
+            panel.addSubview_(ws.text_label(row.name, _rect(62, 30, 330, 20),
+                                            ws.ui_font(15, AppKit.NSFontWeightSemibold)))
+            panel.addSubview_(ws.text_label(row.why, _rect(62, 10, card_w - 62 - 160, 18), ws.ui_font(12.5),
+                                            ws.TEXT_DIM))
+            button = ws.pill_button("", _rect(card_w - 16 - 136, 12, 136, 34),
+                                    self._target(lambda k=key: self.turn_on(k)), style="ghost")
+            panel.addSubview_(button)
+            page.addSubview_(panel)
+            hint = ws.text_label(row.stuck_hint(), _rect(card_x + 8, 76, card_w - 16, 32), ws.ui_font(11.5),
+                                 ws.ORANGE, selectable=True)
             hint.setHidden_(True)
             page.addSubview_(hint)
             self.rows[key] = (mark, button, hint)
+            self.badges[key] = circle
+
+    def _field_box(self, page, field, frame) -> None:
+        """A text field drawn borderless inside a rounded dark box (shown and hidden with it)."""
+        box = ws.card(frame, radius=12, fill=ws.rgb(255, 255, 255, 0.06), edge=ws.rgb(255, 255, 255, 0.14))
+        field.setFrame_(_rect(14, (frame.size.height - 22) / 2, frame.size.width - 28, 22))
+        field.setBezeled_(False)
+        field.setBordered_(False)
+        field.setDrawsBackground_(False)
+        field.setFocusRingType_(AppKit.NSFocusRingTypeNone)
+        field.setFont_(ws.ui_font(15))
+        field.setTextColor_(ws.TEXT)
+        box.addSubview_(field)
+        page.addSubview_(box)
+        self._boxes[field] = box
 
     def _build_account(self, page) -> None:
-        self.account_heading = _label("", _rect(MARGIN, 306, WIDTH - 2 * MARGIN, 34), 24,
-                                      AppKit.NSFontWeightBold, align=AppKit.NSTextAlignmentCenter)
-        page.addSubview_(self.account_heading)
-        self.account_subtitle = _label("", _rect(60, 262, WIDTH - 120, 36), 13,
-                                       color=AppKit.NSColor.secondaryLabelColor(),
-                                       align=AppKit.NSTextAlignmentCenter)
-        page.addSubview_(self.account_subtitle)
-        x, w = (WIDTH - 320) / 2, 320
-        self.email_field = AppKit.NSTextField.alloc().initWithFrame_(_rect(x, 218, w, 28))
+        self._boxes = getattr(self, "_boxes", {})
+        self.account_heading = self._heading(page, [("", None)], 378, size=50)
+        self.account_subtitle = self._subtitle(page, "", 330, 40, size=14)
+        x, w = (WIDTH - 360) / 2, 360
+        self.email_field = AppKit.NSTextField.alloc().initWithFrame_(_rect(0, 0, w, 22))
         self.email_field.setPlaceholderString_("Email")
-        self.password_field = AppKit.NSSecureTextField.alloc().initWithFrame_(_rect(x, 180, w, 28))
-        self.code_field = AppKit.NSTextField.alloc().initWithFrame_(_rect(x, 218, w, 28))
+        self.password_field = AppKit.NSSecureTextField.alloc().initWithFrame_(_rect(0, 0, w, 22))
+        self.code_field = AppKit.NSTextField.alloc().initWithFrame_(_rect(0, 0, w, 22))
         self.code_field.setPlaceholderString_("6-digit code")
-        for field in (self.email_field, self.password_field, self.code_field):
-            field.setFont_(AppKit.NSFont.systemFontOfSize_(14))
-            field.setBezelStyle_(AppKit.NSTextFieldRoundedBezel)
-            page.addSubview_(field)
-        self.account_check = _label("✓", _rect((WIDTH - 60) / 2, 196, 60, 48), 40, AppKit.NSFontWeightBold,
-                                    color=AppKit.NSColor.systemGreenColor(), align=AppKit.NSTextAlignmentCenter)
+        self._field_box(page, self.email_field, _rect(x, 270, w, 44))
+        self._field_box(page, self.password_field, _rect(x, 216, w, 44))
+        self._field_box(page, self.code_field, _rect(x, 270, w, 44))
+        self.account_check = ws.text_label("✓", _rect((WIDTH - 80) / 2, 236, 80, 64),
+                                           ws.ui_font(48, AppKit.NSFontWeightBold), ws.GREEN,
+                                           align=AppKit.NSTextAlignmentCenter)
         page.addSubview_(self.account_check)
-        self.submit_button = _button("", _rect(x, 132, w, 32), self._target(lambda: self.account(af.SUBMIT)))
+        self.submit_button = ws.pill_button("", _rect(x, 160, w, 42),
+                                            self._target(lambda: self.account(af.SUBMIT)), style="primary")
         page.addSubview_(self.submit_button)
-        self.spinner = AppKit.NSProgressIndicator.alloc().initWithFrame_(_rect(x + w + 10, 140, 16, 16))
+        self.spinner = AppKit.NSProgressIndicator.alloc().initWithFrame_(_rect(x + w + 12, 173, 16, 16))
         self.spinner.setStyle_(AppKit.NSProgressIndicatorStyleSpinning)
         self.spinner.setDisplayedWhenStopped_(False)
         page.addSubview_(self.spinner)
-        self.account_message = _label("", _rect(70, 88, WIDTH - 140, 36), 12,
-                                      align=AppKit.NSTextAlignmentCenter, selectable=True)
+        self.account_message = ws.text_label("", _rect(110, 112, WIDTH - 220, 38), ws.ui_font(13), ws.TEXT_DIM,
+                                             align=AppKit.NSTextAlignmentCenter, selectable=True)
         page.addSubview_(self.account_message)
         self.account_links = [
-            _link("", _rect(70, 56, 200, 22), self._target(lambda: self._account_link(0))),
-            _link("", _rect(WIDTH - 270, 56, 200, 22), self._target(lambda: self._account_link(1))),
+            _link("", _rect(130, 86, 220, 22), self._target(lambda: self._account_link(0))),
+            _link("", _rect(WIDTH - 350, 86, 220, 22), self._target(lambda: self._account_link(1))),
         ]
         for link in self.account_links:
             page.addSubview_(link)
@@ -342,50 +385,55 @@ class WelcomeWindow:
             self.account(links[index][1])
 
     def _build_try(self, page) -> None:
-        self._title(page, "Try it", 306)
-        page.addSubview_(_label(
-            f"Press {self.dictation_key} and say “Hello Utter, this is my first dictation.” "
-            "Then stop talking: Utter types it into the box below.",
-            _rect(MARGIN, 254, WIDTH - 2 * MARGIN, 40), 13))
-        self.try_field = AppKit.NSTextField.alloc().initWithFrame_(_rect(MARGIN, 172, WIDTH - 2 * MARGIN, 64))
+        self._boxes = getattr(self, "_boxes", {})
+        self._heading(page, [("Try", None), ("it", "circle")], 374, size=56, burst=True)
+        self._subtitle(page, f"Press {self.dictation_key} and say “Hello Utter, this is my first dictation.”\n"
+                             "Then stop talking: Utter types it into the box below.", 318, 44, size=14.5)
+        x, w = (WIDTH - 560) / 2, 560
+        box = ws.card(_rect(x, 202, w, 96), radius=16, fill=ws.rgb(255, 255, 255, 0.05),
+                      edge=ws.rgb(255, 255, 255, 0.14))
+        self.try_field = AppKit.NSTextField.alloc().initWithFrame_(_rect(16, 12, w - 32, 72))
         self.try_field.setPlaceholderString_("Your words appear here")
-        self.try_field.setFont_(AppKit.NSFont.systemFontOfSize_(15))
+        self.try_field.setFont_(ws.ui_font(17))
+        self.try_field.setTextColor_(ws.TEXT)
+        self.try_field.setBezeled_(False)
+        self.try_field.setDrawsBackground_(False)
+        self.try_field.setFocusRingType_(AppKit.NSFocusRingTypeNone)
         self.try_field.cell().setWraps_(True)
-        page.addSubview_(self.try_field)
-        self.try_status = _label("", _rect(MARGIN, 138, WIDTH - 2 * MARGIN, 22), 13, AppKit.NSFontWeightMedium)
+        box.addSubview_(self.try_field)
+        page.addSubview_(box)
+        self.try_status = ws.text_label("", _rect(x, 166, w, 22), ws.ui_font(14, AppKit.NSFontWeightMedium),
+                                        ws.TEXT_DIM, align=AppKit.NSTextAlignmentCenter)
         page.addSubview_(self.try_status)
-        self.try_help = _label(
+        self.try_help = ws.text_label(
             "Nothing happening? After switching on Input Monitoring, macOS sometimes needs Utter "
-            "to be restarted.", _rect(MARGIN, 84, WIDTH - 2 * MARGIN - 150, 36), 12,
-            color=AppKit.NSColor.secondaryLabelColor())
+            "to be restarted.", _rect(x, 106, w - 160, 36), ws.ui_font(12.5), ws.TEXT_DIM)
         page.addSubview_(self.try_help)
-        self.restart_button = _button("Restart Utter", _rect(WIDTH - MARGIN - 130, 88, 130, 30),
-                                      self._target(self.restart))
+        self.restart_button = ws.pill_button("Restart Utter", _rect(x + w - 140, 108, 140, 34),
+                                             self._target(self.restart), style="ghost")
         page.addSubview_(self.restart_button)
         for view in (self.try_help, self.restart_button):
             view.setHidden_(True)
+        page.addSubview_(ws.hand_note([("just", 0), ("talk!", 10)], _rect(640, 300, 100, 80), size=27, tilt=10,
+                                      strokes=[ws.swash(8, 62, 8, lift=2)]))
 
     def _build_finish(self, page) -> None:
-        if ICON_PATH.is_file():
-            icon = AppKit.NSImageView.alloc().initWithFrame_(_rect((WIDTH - 72) / 2, 266, 72, 72))
-            icon.setImage_(AppKit.NSImage.alloc().initWithContentsOfFile_(str(ICON_PATH)))
-            page.addSubview_(icon)
-        self._title(page, "You're all set", 224, centered=True)
-        page.addSubview_(_label(
-            "Utter lives in the menu bar: look for the wave icon at the top of your screen. "
-            "You can open this window again from its menu (Setup…).",
-            _rect(70, 172, WIDTH - 140, 40), 13, color=AppKit.NSColor.secondaryLabelColor(),
-            align=AppKit.NSTextAlignmentCenter))
+        page.addSubview_(ws.icon_tile(_rect((WIDTH - 80) / 2, 368, 80, 80)))
+        self._heading(page, [("You're", None), ("all set", "circle")], 278, size=62, burst=True)
+        self._subtitle(page, "Utter lives in the menu bar: look for the wave icon at the top of your screen.\n"
+                             "You can open this window again in Settings → General.", 224, 46, size=14.5)
         self.login_checkbox = AppKit.NSButton.checkboxWithTitle_target_action_(
             "Start Utter when I log in", self._target(self._toggle_login), "fire:")
-        self.login_checkbox.setFrame_(_rect((WIDTH - 220) / 2, 120, 220, 24))
-        self.login_checkbox.setFont_(AppKit.NSFont.systemFontOfSize_(14))
+        self.login_checkbox.setFrame_(_rect((WIDTH - 240) / 2, 170, 240, 26))
+        self.login_checkbox.setFont_(ws.ui_font(15))
         page.addSubview_(self.login_checkbox)
-        note = ("Utter is added to System Settings > General > Login Items. You can change this "
-                "any time in Utter's menu." if self.login_available else
+        note = ("Utter is added to System Settings › General › Login Items. You can change this "
+                "any time in Utter's Settings." if self.login_available else
                 "Only available in Utter.app (this copy runs from the project folder).")
-        page.addSubview_(_label(note, _rect(90, 76, WIDTH - 180, 34), 11,
-                                color=AppKit.NSColor.secondaryLabelColor(), align=AppKit.NSTextAlignmentCenter))
+        page.addSubview_(ws.text_label(note, _rect(150, 118, WIDTH - 300, 36), ws.ui_font(12.5), ws.TEXT_FAINT,
+                                       align=AppKit.NSTextAlignmentCenter))
+        page.addSubview_(ws.hand_note([("happy", 0), ("talking!", 8)], _rect(628, 300, 120, 80), size=27,
+                                      tilt=-8, strokes=[ws.swash(10, 86, 8, lift=2)]))
 
     # ---- Showing ---------------------------------------------------------------------
 
@@ -427,6 +475,7 @@ class WelcomeWindow:
             page.setHidden_(page_name != name)
         total = len(self.flow.steps)
         self.step_label.setStringValue_(f"Step {self.flow.step + 1} of {total}" if total > 1 else "")
+        self.step_dots.setStep_of_(self.flow.step, total)
         self.back_button.setHidden_(self.flow.step == 0)
         # Return presses the form's own button on the account step, else Continue
         on_account = name == "account" and self.account_form is not None
@@ -445,22 +494,27 @@ class WelcomeWindow:
     def _update_views(self) -> None:
         now = self._clock()
         highlight = self.flow.next_permission()
+        hint_shown = False  # the hints share one place under the rows: the first stuck one
         for key, (mark, button, hint) in self.rows.items():
             row = self.flow.rows[key]
+            circle = self.badges[key]
             if row.granted:
                 mark.setStringValue_("✓")
-                mark.setTextColor_(AppKit.NSColor.systemGreenColor())
+                mark.setTextColor_(ws.BACKGROUND)
+                circle.fill = ws.GREEN
             else:
                 mark.setStringValue_(str(PERMISSION_ORDER.index(key) + 1))
-                mark.setTextColor_(AppKit.NSColor.labelColor() if key == highlight
-                                   else AppKit.NSColor.tertiaryLabelColor())
+                mark.setTextColor_(ws.TEXT if key == highlight else ws.TEXT_DIM)
+                circle.fill = ws.PURPLE if key == highlight else ws.KEYCAP
+            circle.setNeedsDisplay_(True)
             button.setTitle_(row.button_title(self._asked_before(key)))
             button.setEnabled_(not row.granted)
             button.setKeyEquivalent_("")
-            hint.setHidden_(not row.stuck(now))
+            stuck = row.stuck(now) and not hint_shown
+            hint.setHidden_(not stuck)
+            hint_shown = hint_shown or stuck
         self.try_status.setStringValue_(self.flow.try_status())
-        self.try_status.setTextColor_(AppKit.NSColor.systemGreenColor() if self.flow.try_passed
-                                      else AppKit.NSColor.secondaryLabelColor())
+        self.try_status.setTextColor_(ws.GREEN if self.flow.try_passed else ws.TEXT_DIM)
         needs_help = self.flow.try_needs_help(now) and self._restart is not None
         self.try_help.setHidden_(not needs_help)
         self.restart_button.setHidden_(not needs_help)
@@ -474,9 +528,10 @@ class WelcomeWindow:
         fields = form.fields()
         self.account_heading.setStringValue_(form.heading())
         self.account_subtitle.setStringValue_(form.subtitle())
-        self.email_field.setHidden_(not fields.email)
-        self.code_field.setHidden_(not fields.code)
-        self.password_field.setHidden_(not fields.password)
+        for field, shown in ((self.email_field, fields.email), (self.code_field, fields.code),
+                             (self.password_field, fields.password)):
+            field.setHidden_(not shown)
+            self._boxes[field].setHidden_(not shown)
         self.password_field.setPlaceholderString_(form.password_placeholder())
         self.account_check.setHidden_(not form.done)
         if fields.email and not str(self.email_field.stringValue()) and form.email:
@@ -494,9 +549,8 @@ class WelcomeWindow:
         message = form.error or form.info
         self.account_message.setStringValue_(message)
         self.account_message.setTextColor_(
-            AppKit.NSColor.systemRedColor() if form.error else
-            AppKit.NSColor.systemOrangeColor() if (form.suggestion or form.info.startswith("You haven't")) else
-            AppKit.NSColor.secondaryLabelColor())
+            ws.RED if form.error else
+            ws.ORANGE if (form.suggestion or form.info.startswith("You haven't")) else ws.TEXT_DIM)
         links = form.links()
         for i, link in enumerate(self.account_links):
             if i < len(links):
@@ -506,9 +560,9 @@ class WelcomeWindow:
             else:
                 link.setHidden_(True)
         if len(links) == 1:  # a single link sits in the middle
-            self.account_links[0].setFrame_(_rect((WIDTH - 240) / 2, 56, 240, 22))
+            self.account_links[0].setFrame_(_rect((WIDTH - 260) / 2, 86, 260, 22))
         else:
-            self.account_links[0].setFrame_(_rect(70, 56, 200, 22))
+            self.account_links[0].setFrame_(_rect(130, 86, 220, 22))
         self.flow.signed_in = form.done
         self.next_button.setEnabled_(self.flow.can_continue)
         self.next_button.setKeyEquivalent_("\r" if form.done else "")

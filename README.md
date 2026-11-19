@@ -121,6 +121,8 @@ uv run python scripts/build_app.py --install # build Utter.app and put it in App
 - Speech to text: [Whisper](https://github.com/openai/whisper) by OpenAI (MIT), run with
   [MLX](https://github.com/ml-explore/mlx) and mlx-whisper by Apple (MIT), using the models
   converted by [mlx-community](https://huggingface.co/mlx-community).
+- Handwriting in the welcome window: [Caveat](https://github.com/googlefonts/caveat) (SIL Open Font
+  Licence, see `assets/fonts/Caveat-OFL.txt`).
 - Hearing when you stop talking: [Silero VAD](https://github.com/snakers4/silero-vad) (MIT,
   see `assets/silero_vad_LICENSE.txt`).
 - Menu bar: [rumps](https://github.com/jaredks/rumps); keys:
