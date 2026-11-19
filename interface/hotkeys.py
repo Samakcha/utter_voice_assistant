@@ -147,6 +147,12 @@ class HotkeyManager:
                 "This may indicate a conflict with an existing macOS system shortcut, or an invalid format."
             ) from e
 
+    def set_hotkeys(self, command_hotkey_str: str, dictation_hotkey_str: str, hold_to_talk: bool) -> None:
+        """New shortcuts from the Settings window (call stop() before and start() after)."""
+        self._command_hotkey_str = command_hotkey_str
+        self._dictation_hotkey_str = dictation_hotkey_str
+        self.hold_to_talk = bool(hold_to_talk)
+
     def stop(self) -> None:
         """Stop hotkey listener."""
         if self._hotkey_listener is not None:

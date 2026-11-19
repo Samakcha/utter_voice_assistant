@@ -34,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 APP_NAME = "Utter"
 BUNDLE_ID = "com.utter.mac"  # changing it later makes macOS treat Utter as a new app
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 MIN_MACOS = "14.0"
 SIGNING_IDENTITY = "Utter Developer"
 

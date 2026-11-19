@@ -349,9 +349,11 @@ def _app(monkeypatch, tmp_path):
     return app_mod, app
 
 
-def test_menu_has_setup_and_start_at_login(monkeypatch, tmp_path):
+def test_menu_has_settings_and_start_at_login_moved_into_it(monkeypatch, tmp_path):
     _, app = _app(monkeypatch, tmp_path)
-    assert "Setup…" in app.menu and "Start at Login" in app.menu
+    assert "Settings…" in app.menu and "Check Permissions" in app.menu
+    # Setup, start at login, word list, log and recordings are in the Settings window now
+    assert "Setup…" not in app.menu and "Start at Login" not in app.menu
     assert app.login_menu_item.state == 0  # not the app: off
     app.menu_icon.stop()
 

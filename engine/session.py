@@ -26,6 +26,16 @@ class SessionManager:
     and recording retention. Pure engine component with NO UI code.
     """
 
+    @property
+    def config(self) -> AppConfig:
+        return self._config
+
+    @config.setter
+    def config(self, config: AppConfig) -> None:
+        """New settings from the Settings window: used from the next session on (the sample
+        rate and voice detector are not part of the window, so they never change here)."""
+        self._config = config
+
     def __init__(
         self,
         config: AppConfig,

@@ -246,7 +246,7 @@ def test_menu_opens_the_settings_file_and_the_log(tmp_path, monkeypatch):
     app = VoiceAssistantApp(config=config, session_manager=SessionManager(config=config))
     app.overlay = None
     titles = [item for item in app.menu]
-    assert "Edit Settings…" in titles and "Open Log" in titles
+    assert "Settings…" in titles  # the settings file and the log open from the Settings window
 
     calls, alerts = [], []
     monkeypatch.setattr(subprocess, "run", lambda args, *a, **k: calls.append(args))

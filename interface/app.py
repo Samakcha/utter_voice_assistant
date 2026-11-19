@@ -17,6 +17,7 @@ from engine.apps import STATUS_AMBIGUOUS, AppInventory
 from engine.chunk_joiner import join_transcription_chunks
 from engine.cleanup import clean_dictation
 from engine.commands import CommandMatch, allows_early_finish, match_command
+import engine.config as engine_config
 from engine.config import AppConfig
 from engine.insertion import format_dictation_insertion
 from engine.models import DictationChunk, EndReason, SessionMode, SessionResult, TranscriptionResult
@@ -65,6 +66,16 @@ def _paste_allowed() -> bool:
     """macOS lets Utter press ⌘V for you only with Accessibility; without it the keystroke is
     silently dropped (and restoring the old clipboard would then lose the dictation)."""
     return check_accessibility_permission()
+
+
+def _app_version() -> str:
+    """Utter.app's version (Info.plist), or "" from the project folder."""
+    try:
+        info = AppKit.NSBundle.mainBundle().infoDictionary() or {}
+        version = info.get("CFBundleShortVersionString")
+        return str(version) if version and str(AppKit.NSBundle.mainBundle().bundlePath()).endswith(".app") else ""
+    except Exception:
+        return ""
 
 
 def run_soon(fn) -> None:
@@ -191,12 +202,15 @@ class VoiceAssistantApp(rumps.App):
         self.permissions_item = rumps.MenuItem("Check Permissions", callback=self.show_permissions_dialog)
         self.recordings_item = rumps.MenuItem("Open Recordings Folder", callback=self.open_recordings_folder)
         self.word_list_item = rumps.MenuItem("Edit Word List…", callback=self.open_word_list)
-        self.settings_item = rumps.MenuItem("Edit Settings…", callback=self.open_settings_file)
+        self.settings_item = rumps.MenuItem("Settings…", callback=self.show_settings, key=",")
         self.log_item = rumps.MenuItem("Open Log", callback=self.open_log)
         self.setup_item = rumps.MenuItem("Setup…", callback=self.show_setup)
         self.login_menu_item = rumps.MenuItem("Start at Login", callback=self.toggle_start_at_login)
-        # Set by main.py: the user's settings file and the log file
+        # Set by main.py: the user's settings file (and the shipped one, to start it from) and the log file
         self.settings_file: Optional[Path] = None
+        self.default_settings_file: Optional[Path] = None
+        self.settings_window = None  # the open Settings window (interface/settings_window.py), if any
+        self._hotkeys_paused = False  # while the Settings window records a new shortcut
         self.missing_permissions: List[str] = []  # set by main.py; shown in the menu
         self.log_file: Optional[Path] = None
         # Set by main.py: where setup and the permission asks are remembered (data folder)
@@ -217,13 +231,8 @@ class VoiceAssistantApp(rumps.App):
             *([self.account_item] if self.account.enabled else []),
             None,  # Separator
             self.toggle_item,
-            self.setup_item,
+            self.settings_item,  # start at login, word list, log, recordings and setup are in there
             self.permissions_item,
-            self.login_menu_item,
-            self.word_list_item,
-            self.settings_item,
-            self.log_item,
-            self.recordings_item,
             None,  # Separator
             self.quit_item,
         ]
@@ -279,7 +288,7 @@ class VoiceAssistantApp(rumps.App):
     def restart_hotkeys(self) -> None:
         """Start listening for the hotkeys again: needed when Accessibility and Input
         Monitoring are switched on while Utter runs (before, macOS gave it no key events)."""
-        logger.info("Permissions changed: restarting the hotkey listener.")
+        logger.info("Restarting the hotkey listener.")
         self.hotkey_manager.stop()
         self.hotkey_manager.hold_to_talk = self.config.hotkeys.hold_to_talk
         self.start_listeners()
@@ -385,6 +394,7 @@ class VoiceAssistantApp(rumps.App):
 
     def _on_account_change(self) -> None:
         self._refresh_account_menu()
+        self._refresh_settings_window()
         if self.model_ready and self.is_running and not self.session_manager.is_listening:
             self.status_item.title = self._ready_status_text()
 
@@ -447,13 +457,14 @@ class VoiceAssistantApp(rumps.App):
         from engine.config import running_as_app
         return running_as_app()
 
-    def relaunch(self) -> None:
+    def relaunch(self, resume_setup: bool = True) -> None:
         """Quit and open Utter again (macOS sometimes only applies Input Monitoring after a
-        restart); the welcome window reopens on the Try step."""
+        restart); the welcome window reopens on the Try step. resume_setup=False: just restart
+        (a new speech model from Settings)."""
         bundle = str(AppKit.NSBundle.mainBundle().bundlePath())
         if not bundle.endswith(".app"):
             return
-        if self.setup_record is not None:
+        if resume_setup and self.setup_record is not None:
             setup_flow.write_record(self.setup_record, done=False, resume="try")
         import os
         # Wait until this Utter has exited (the one-at-a-time lock is released), then open it
@@ -1799,6 +1810,103 @@ class VoiceAssistantApp(rumps.App):
             run_on_main_thread(_update_ui)
         except Exception as e:
             logger.error("Failed to restore idle UI: %s", e, exc_info=True)
+
+    # ---- Settings window ------------------------------------------------------------------------
+
+    def show_settings(self, _sender=None, page: Optional[str] = None) -> None:
+        if self.settings_window is not None:
+            self.settings_window.show(page)
+            return
+        if self.settings_file is None:  # no file yet: the first change creates it
+            self.settings_file = engine_config.data_paths().user_config
+        path = self.settings_file
+        from .settings_model import SettingsModel, installed_models
+        from .settings_window import SettingsWindow
+        try:
+            model = SettingsModel(config=self.config, settings_file=path,
+                                  default_config=self.default_settings_file or engine_config.DEFAULT_CONFIG_PATH,
+                                  on_saved=self.apply_settings)
+            self.settings_window = SettingsWindow(
+                model,
+                pause_hotkeys=self.pause_hotkeys,
+                resume_hotkeys=self.resume_hotkeys,
+                login_status=self.login_item.status,
+                set_login=self._settings_set_login,
+                open_login_settings=self.login_item.open_settings,
+                account_email=lambda: (self.account.email if self.account.signed_in else "")
+                if self.account.enabled else None,
+                sign_in=self.show_sign_in,
+                sign_out=self.confirm_sign_out,
+                show_setup=self.show_setup,
+                check_permissions=self.show_permissions_dialog,
+                open_recordings=self.open_recordings_folder,
+                open_log=self.open_log,
+                open_settings_file=self.open_settings_file,
+                restart=(lambda: self.relaunch(resume_setup=False)) if self._can_relaunch() else None,
+                models=lambda: installed_models(self.config.whisper.models_dir, self.config.whisper.model_size),
+                active_model=lambda: getattr(self.transcriber, "active_model_size", "") or "",
+                version=_app_version(),
+                closed=self._settings_closed,
+                page=page or "general",
+            )
+            self.settings_window.show()
+            logger.info("Settings window shown.")
+        except Exception as e:
+            logger.error("Could not show the Settings window: %s", e, exc_info=True)
+            self.settings_window = None
+
+    def _settings_closed(self) -> None:
+        self.settings_window = None
+
+    def _refresh_settings_window(self) -> None:
+        if self.settings_window is not None:
+            self.settings_window.refresh()
+
+    def _settings_set_login(self, on: bool) -> None:
+        status = self.login_item.status()
+        if status == login_item_module.UNAVAILABLE:
+            return
+        new = self.login_item.set_enabled(on)
+        if on and new == login_item_module.NEEDS_APPROVAL:
+            self.login_item.open_settings()
+        if self.setup_record is not None:
+            setup_flow.write_record(self.setup_record, start_at_login=new == login_item_module.ON)
+        self._refresh_login_menu()
+
+    def pause_hotkeys(self) -> None:
+        """While a new shortcut is recorded: the old one mustn't start Utter (and the key tap
+        would swallow it before the Settings window sees it)."""
+        if not self._hotkeys_paused:
+            self._hotkeys_paused = True
+            self.hotkey_manager.stop()
+
+    def resume_hotkeys(self) -> None:
+        if self._hotkeys_paused:
+            self._hotkeys_paused = False
+            self.restart_hotkeys()
+
+    def apply_settings(self, old: AppConfig, new: AppConfig) -> None:
+        """Use settings just saved in the Settings window, from the next session on."""
+        self.config = new
+        self.session_manager.config = new
+        if (old.hotkeys.command_mode, old.hotkeys.dictation_mode, old.hotkeys.hold_to_talk) != (
+                new.hotkeys.command_mode, new.hotkeys.dictation_mode, new.hotkeys.hold_to_talk):
+            self.hotkey_manager.set_hotkeys(new.hotkeys.command_mode, new.hotkeys.dictation_mode,
+                                            new.hotkeys.hold_to_talk)
+            if not self._hotkeys_paused:  # else resume_hotkeys() starts them
+                self.restart_hotkeys()
+        if old.vocabulary.file != new.vocabulary.file:
+            self.vocabulary = VocabularyStore(new.vocabulary.file)
+        if (old.apps.enabled, old.apps.aliases) != (new.apps.enabled, new.apps.aliases):
+            if not new.apps.enabled:
+                self.app_inventory = None
+            elif self.app_inventory is None:
+                self.app_inventory = AppInventory(aliases=new.apps.aliases)
+                threading.Thread(target=self.app_inventory.refresh, name="app-list", daemon=True).start()
+            else:
+                self.app_inventory.aliases = dict(new.apps.aliases)
+        validate_stop_phrases(new.dictation.stop_phrases)
+        validate_stop_phrases(new.notes.stop_phrases)
 
     def show_permissions_dialog(self, _sender=None) -> None:
         """Display status of required permissions and provide deep links to fix them."""

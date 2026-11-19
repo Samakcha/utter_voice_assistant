@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Product name:** Utter (chosen 17 November 2026)
-**Status:** v0.6.0 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15). v0.5.0 adds the first-run welcome window (permissions with live ticks, a try-it step) and start at login (6.16). v0.6.0 requires an Utter account: sign in once with email and password, through Supabase, so the number of users can be counted (6.17).
+**Status:** v0.7.0 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15). v0.5.0 adds the first-run welcome window (permissions with live ticks, a try-it step) and start at login (6.16). v0.6.0 requires an Utter account: sign in once with email and password, through Supabase, so the number of users can be counted (6.17). v0.7.0 adds the Settings window: every everyday setting in one window, saved and used at once, with no file to edit (6.18).
 **Last updated:** 19 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -69,7 +69,7 @@ All hotkeys are handled by **one single keyboard listener** (see section 11 for 
 ## 6. Functional Requirements
 
 ### 6.1 App shell
-- Menu bar app named **Utter**, with Stop Utter / Start Utter / Quit, a "Check Permissions" item, "Edit Word List…" (see 6.11), "Edit Settings…" (the user's `config.toml`, 6.14), "Open Log" (6.14), and "Open Recordings Folder" (the folder only fills when `keep_recordings = true`). The first menu line spells out the status in words.
+- Menu bar app named **Utter**, with Stop Utter / Start Utter, **Settings… (⌘,)** (6.18), "Check Permissions" and Quit (plus Sign In… / Sign Out, 6.17). Since v0.7.0 the word list, settings file, log, recordings folder, start at login and the welcome window are opened from the Settings window instead of the menu. The first menu line spells out the status in words.
 - **Icon only in the menu bar, no text** (`interface/menu_icon.py`), drawn in code as a macOS template image, so it turns white or black to match the menu bar like other apps' icons. One fixed size (18 × 16 points) in every state, so neighbouring icons never shift:
   - **Ready:** a still five-bar waveform, the Utter mark.
   - **Command mode:** a pulsing orb, slightly larger while you speak.
@@ -188,7 +188,7 @@ Targets the **native WhatsApp desktop app** (Mac Catalyst; bundle id `net.whatsa
 Milestone 3, stage 1: nothing Utter needs lives in the project folder any more, so the packaged app can run on its own.
 
 1. **Data folder:** `~/Library/Application Support/Utter` (word list, accuracy recordings, note backups, settings, models). On the first start of v0.3.11 the old `~/Library/Application Support/VoiceAssistant` is **renamed** to it: nothing is copied or deleted. If both exist with data, nothing is merged and the old one is left as it is. An empty Utter folder (rumps creates one per app name) does not block the rename.
-2. **Settings:** the shipped `config.toml` (project folder, later inside the app) holds the defaults and is copied once to `<data folder>/config.toml`; Utter reads that copy from then on, so settings survive updates. Menu: "Edit Settings…" opens it in the text editor; changes apply after a restart. The accuracy and benchmark scripts read the same file.
+2. **Settings:** the shipped `config.toml` (project folder, later inside the app) holds the defaults and is copied once to `<data folder>/config.toml`; Utter reads that copy from then on, so settings survive updates. The Settings window (6.18) changes it for you, at once; Settings → Advanced → "Open File" opens it in the text editor for the technical values, which apply after a restart. The accuracy and benchmark scripts read the same file.
 3. **Models:** moved from the project's `./models` to `<data folder>/models` on first start (a rename on the same disk: instant, no extra space). Each model is moved under a temporary `.moving` name and renamed when complete, so an interrupted move is redone from the intact original; a model already in the data folder is never overwritten. The project's `./models` is still searched if a model is missing in the data folder.
 4. **Log file:** `~/Library/Logs/Utter/utter.log`, up to 1 MB, plus 3 older files; menu "Open Log" opens it in Console. The command log line now includes the speech-end-to-result time.
 5. **Never blocks start-up:** a step that fails is logged and Utter starts anyway (shipped settings, models found in the old place). The accuracy script runs the same setup first, in case it runs before the app.
@@ -236,10 +236,21 @@ Decided 19 November 2026: everyone signs in once, so the number of users can be 
 8. **Limits:** a determined person could remove the check from their copy (it is a local app); this counts users, it is not copy protection. Once there are real users' emails, a privacy policy is needed (Milestone 4 website).
 9. **Checked:** 36 new automated tests against a fake Supabase (sign-up with code, duplicate email, wrong password in both error styles, unconfirmed email, refresh and revoked login, offline, password reset, Keychain round trip, the form's modes, the window's required step and sign-in window, the app's lock and menu). The Keychain bridge was tried for real once (a test item written, read, updated and removed). Connection to the real project checked from inside the built app (HTTPS, `/auth/v1/settings`: email sign-in on, confirm email on). A real sign-up worked on 19 November 2026 (the user's own email: code received, signed in, listed in Authentication > Users). Later: 34 more tests for the typo check, throwaway addresses and the 7-day rule.
 
+### 6.18 Settings window (`interface/settings_model.py`, `settings_window.py`, `engine/settings_file.py`)
+Milestone 3, stage 4: nobody has to edit a text file. Menu bar → **Settings…** opens one window, in the style of macOS System Settings: a sidebar of seven pages, each a list of grouped rows with a short grey explanation under every setting.
+
+1. **Pages:** *General* (Utter account and Sign Out, start at login, check permissions, show the welcome window, the version); *Shortcuts* (command and dictation shortcuts, Esc shown, hold to talk, the pause that runs a command); *Dictation* (tidy up on/off plus filler sounds, repeats and corrections, the silence that ends dictation, stop phrases, a space after the text); *Notes* (Notes folder, note title, the silence that saves a note, its stop phrases, show Notes after saving, the ready sound); *Words & Apps* (use the word list, fix close mishearings, the words themselves, open apps by voice, your own names for apps as "browser = Safari" lines); *Privacy* (keep recordings and the two WhatsApp audio rules under it, hide names in the log, show the recordings folder, open the log); *Advanced* (speech model among the ones on this Mac, open the settings file).
+2. **Saved at once, used at once:** switches and menus save the moment they change; text fields when Return is pressed or the field is left; the two text boxes with Save or when the window closes. The app uses the new settings from the next dictation or command, with no restart: new shortcuts and hold to talk restart the key listener, the word list and app names are replaced in place. Only a new speech model needs a restart; Advanced then shows **Restart Now** (Utter.app only).
+3. **Checked before saving:** a shortcut must hold ⌃ Control or ⌥ Option (⌘-only ones belong to other apps, e.g. ⌘C), cannot be Esc, and cannot be the other shortcut's keys; stop phrases need two or more words (no "okay"); the note title may only use {date} and {time}; app-name lines need "what you say = App". The reason is shown in red at the bottom of the window and nothing is saved. Silences are picked from a menu, so they are always sensible (a value set by hand in the file is kept and shown).
+4. **Recording a shortcut:** click it, press the new keys. While recording, Utter's own key listener is paused, so pressing the old shortcut doesn't start Utter; Esc keeps the old one.
+5. **The file stays readable:** `engine/settings_file.py` rewrites only the changed value in the user's `config.toml`, keeping every comment, unknown setting and the order. A change is written only if the whole file still loads afterwards, and the file is replaced in one step (never half written). A missing settings file is first copied from the shipped one. Technical values (audio, voice detector, chunk sizes) are not in the window on purpose; they stay in the file.
+6. **Look:** standard macOS controls (switches, pop-up menus), light and dark mode, sidebar icons from SF Symbols. Like the welcome window, it can be restyled later.
+7. **Checked:** 29 new automated tests (file writing keeps comments, a broken change is refused and leaves the file as it was, shortcut rules, text rules, the app applying changes live, recording a shortcut, the word list saved on close, a field being edited saved when switching pages, the speech model offering a restart). Saving tried on a copy of the user's real settings file: only the changed lines differ. Every page drawn in light and dark mode and looked at. Built as Utter.app 0.7.0; its self-test passed.
+
 ### 6.11 Personal word list
 Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "Supabase") without retraining anything.
 
-1. **The list:** `~/Library/Application Support/Utter/vocabulary.txt`, one name or term per line, spelled the way it should be written; `#` starts a comment. The menu item "Edit Word List…" creates the file with instructions (if missing) and opens it in the default text editor. Edits apply from the next dictation without a restart (the file is re-read when it changes).
+1. **The list:** `~/Library/Application Support/Utter/vocabulary.txt`, one name or term per line, spelled the way it should be written; `#` starts a comment. Settings → Words & Apps shows the words in a box to edit (saved with Save, or when the window closes; the explanation at the top of the file is kept). Editing the file by hand still works. Edits apply from the next dictation without a restart (the file is re-read when it changes).
 2. **Scope:** dictation and notes only. Commands are never hinted or corrected, so the command rules stay predictable.
 3. **Hint to Whisper:** each chunk's prompt is `[initial_prompt] Vocabulary: a, b, c. [previous chunk]`. At most 50 terms and about 400 characters, and the previous chunk is trimmed to about 300 characters, because mlx-whisper keeps only the last 223 prompt tokens and long hints can make Whisper invent words. With an empty list the prompts are exactly as before.
 4. **Echo guard:** if Whisper repeats the hint back ("Vocabulary: …", or a transcript that is only three or more listed terms), it is removed from that chunk before stop-phrase detection, so an echo can never hide a trailing stop phrase.
@@ -295,7 +306,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 939 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 968 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -324,17 +335,18 @@ voice-assistant/
   main.py                      entry point (startup is a function, so tests can run it)
   config.toml                  all tunable values, every key commented
   engine/                      audio_capture, vad, session, transcriber, audio_utils, commands,
-                               account, email_check, actions, apps, stop_phrases, chunk_joiner, cleanup, insertion, notes_writer, vocabulary,
+                               account, email_check, settings_file, actions, apps, stop_phrases, chunk_joiner, cleanup, insertion, notes_writer, vocabulary,
                                config, models
   interface/                   app, menu_icon, waveform, hotkeys, key_events, permissions, overlay, clipboard,
                                setup_flow, welcome_window, login_item, account_form, account_manager, keychain,
+                               settings_model, settings_window,
                                whatsapp_ax, whatsapp_control
   assets/                      utter-app-icon.png (drawn by scripts/make_app_icon.py)
   packaging/                   launcher.c (Utter.app's main executable; compiled by scripts/build_app.py)
   dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       939 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       968 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -385,7 +397,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 939 passing |
+| Automated tests | 968 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -488,7 +500,8 @@ Decisions (17 November 2026): the name is **Utter**; built for the user's own Ma
 - **Stage 2 done in v0.4.0 (tested live by the user on 18 November 2026: commands, dictation, pop-up and permissions work):** Utter.app, self-contained, signed with a free personal certificate when present (6.15).
 - **Stage 3 done in v0.5.0 (tested live by the user on 19 November 2026; its look will be redesigned later):** first-run welcome window with live permission ticks, a try-it step, and start at login, on by default (6.16).
 - **Accounts done in v0.6.0 (brought forward from Milestone 4 at the user's request; tested live by the user on 19 November 2026: sign-up with the emailed 6-digit code from Utter's Gmail sender, signed in, hotkeys working, user listed in Supabase; the Caps Lock and window-in-front fixes confirmed):** required sign-in with email and password, typo and throwaway-email checks, 7 days unused → sign in again (6.17).
-- Next stages: (4) the full settings window; (5) final checks (all tests, unchanged accuracy score, live test of the installed app). Running from the terminal keeps working throughout.
+- **Stage 4 built in v0.7.0 (waiting for the user's live test):** the Settings window, every everyday setting saved and used at once (6.18).
+- Next stage: (5) final checks (all tests, unchanged accuracy score, live test of the installed app). Running from the terminal keeps working throughout.
 - Try running the voice detector without PyTorch to shrink the app; ships only if accuracy and tests are unchanged.
 
 ### Ongoing checks

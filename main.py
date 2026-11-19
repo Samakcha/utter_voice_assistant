@@ -207,6 +207,7 @@ def main(run_loop: bool = True) -> VoiceAssistantApp | None:
     transcriber.on_ready = app.on_model_ready
     app.missing_permissions = [p.name for p in permissions.values() if not p.granted]
     app.settings_file = settings_file
+    app.default_settings_file = paths.default_config
     app.log_file = log_file
     app.setup_record = setup_record
     app.permissions_record = asked_record
