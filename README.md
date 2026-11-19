@@ -7,6 +7,8 @@ GPU: no audio and no text ever leaves your computer.
 
 Utter lives in the menu bar. It's a personal project, free and open source (MIT licence).
 
+**Website and 20-second demo:** [getutter-app.vercel.app](https://getutter-app.vercel.app)
+
 ## What it does
 
 | Shortcut | What happens |
