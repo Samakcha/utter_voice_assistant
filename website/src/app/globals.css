@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+/* Utter's colours (the same as its windows: interface/welcome_style.py) */
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-hand: var(--font-caveat);
+
+  --color-ink: #0b0a10;
+  --color-panel: #13121a;
+  --color-fg: #f2f1f7;
+  --color-dim: #aaa8b8;
+  --color-faint: #76748a;
+  --color-line: rgb(255 255 255 / 0.08);
+  --color-key: #2f2e38;
+  --color-violet: #7c5cff;
+  --color-violet-light: #9276ff;
+  --color-lavender: #a892ff;
+
+  --animate-bar: bar 1.1s ease-in-out infinite;
+  --animate-blink: blink 1s step-end infinite;
+  --animate-marquee: marquee 38s linear infinite;
+}
+
+@keyframes bar {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+@keyframes marquee {
+  to { transform: translateX(-50%); }
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-fg);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background: rgb(124 92 255 / 0.45);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

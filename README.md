@@ -116,6 +116,8 @@ uv run python scripts/build_app.py --install # build Utter.app and put it in App
 
 `PRD_Voice_Assistant_macOS_v0.3.md` describes how everything works and why.
 
+The website is in `website/` (Next.js, deployed on Vercel): see `website/README.md`.
+
 ## Credits
 
 - Speech to text: [Whisper](https://github.com/openai/whisper) by OpenAI (MIT), run with

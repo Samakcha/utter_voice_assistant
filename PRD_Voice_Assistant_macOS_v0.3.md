@@ -262,6 +262,14 @@ Milestone 4 (decided 19 November 2026): the owner is a student and won't pay for
 9. **README.md** (what Utter does, what it needs, install, update, account, uninstall, troubleshooting, developer commands, credits), **LICENSE** (MIT, the owner's name) and **PRIVACY.md** (draft for the owner to check: everything spoken and typed stays on the Mac; Supabase stores the email address, a password hash and sign-in times; signing out, and removing Utter from the Mac; at the owner's request it offers no account deletion, so the user count never goes down).
 10. **Checked:** 23 new automated tests (download checks, a cut-off and a damaged download, low memory, no space, the folder names Utter looks for, the package lists, install.sh's syntax, questions and options, the certificate's contents, the Applications fallback, the no-model message, README, licence and privacy). The test suite can no longer open a real alert (`conftest.py`). A fresh clone of the branch in an empty folder was installed with `./install.sh --yes`, offline (packages from uv's cache, the model already on this Mac), into a test folder.
 
+### 6.20 Website (`website/`)
+Milestone 4 (19 November 2026): a one-page site to share instead of the repository page. The owner deploys it on **Vercel** (not GitHub Pages): a Vercel project with Root Directory `website`.
+
+1. **Stack:** Next.js 16 (App Router, fully static), Tailwind CSS 4, components from **React Bits** (Aurora background, BlurText, ShinyText, GradientText, SpotlightCard, StarBorder, CountUp, Magnet; copied as published into `src/components/reactbits`, skipped by lint), lucide icons, Geist and Caveat fonts (served from the site itself). No analytics, no server code.
+2. **Sections:** top bar; hero ("Talk to your Mac. It types for you.", purple aurora, the welcome window screenshot); a scrolling strip of apps it works in; six feature cards; how it works (three steps beside an animated dictation demo with the listening wave); four numbers (0 bytes sent, about 0.5 s to transcribe a sentence, 99% of words right in the accuracy tests, 1 command to install); screenshots of the permissions step and Settings; privacy; the install command with a copy button; FAQ; a closing call; footer with GitHub, privacy and licence links.
+3. **Look:** the same dark purple and Caveat handwriting as the app's windows, with pen circles drawn around words.
+4. **Checked:** production build passes (static), lint clean, no sideways scrolling at phone width (375 px), every section looked at on desktop and phone.
+
 ### 6.11 Personal word list
 Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "Supabase") without retraining anything.
 
@@ -349,6 +357,7 @@ The app checks the first three at startup and prints the exact System Settings p
 voice-assistant/
   main.py                      entry point (startup is a function, so tests can run it)
   install.sh                   install or update Utter on any Mac (6.19)
+  website/                     the one-page site (Next.js, deployed on Vercel; 6.20)
   README.md, LICENSE, PRIVACY.md  for people installing Utter (MIT licence)
   requirements.txt, requirements-dev.txt  what the app needs; what development adds
   config.toml                  all tunable values, every key commented
@@ -537,7 +546,8 @@ Decided 19 November 2026: free only. No Apple developer programme, no paid hosti
 - **Built in v0.8.0 (waiting for the user's test):** clone and `./install.sh`, the model download, the optional certificate, README, MIT licence, privacy policy draft (6.19).
 - **Done in v0.8.1 (tested live by the user on 19 November 2026):** the redesigned welcome and sign-in window (6.16).
 - **Done in v0.8.2 (tested live by the user on 19 November 2026):** the Settings window in the same look (6.18).
-- Later, optional: a GitHub Pages site, Continue with Google.
+- **Built (waiting for the user's deploy):** the website, a Next.js one-pager for Vercel (6.20).
+- Later, optional: Continue with Google.
 
 ### Ongoing checks
 - Re-measure end of speech to action live with `large-v3-turbo` (fixed commands, app launch, WhatsApp search).
