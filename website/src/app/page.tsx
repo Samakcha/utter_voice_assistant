@@ -12,6 +12,7 @@ import { CopyCommand } from "@/components/site/CopyCommand";
 import { GITHUB, LICENSE, PRIVACY, README } from "@/components/site/constants";
 import { HandCircle, HandUnderline } from "@/components/site/HandCircle";
 import { Keycap } from "@/components/site/Keycap";
+import { LaunchVideo } from "@/components/site/LaunchVideo";
 import { ListeningDemo } from "@/components/site/ListeningDemo";
 import { Nav } from "@/components/site/Nav";
 
@@ -155,8 +156,9 @@ export default function Home() {
           <p className="mt-5 text-sm text-faint">macOS 14+ · Apple silicon (M1 or newer) · English</p>
         </div>
 
-        <div className="relative mx-auto mt-20 max-w-5xl">
-          <WindowShot src="/screens/welcome.png" alt="Utter's welcome window: Welcome to Utter, with the dictation and command shortcuts" width={1520} height={1000} priority />
+        <div id="watch" className="relative mx-auto mt-16 max-w-5xl scroll-mt-24">
+          <p className="mb-5 text-center font-hand text-2xl text-lavender sm:text-3xl">Utter in 20 seconds ↓</p>
+          <LaunchVideo />
         </div>
       </section>
 
