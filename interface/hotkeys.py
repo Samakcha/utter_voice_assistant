@@ -22,6 +22,29 @@ from .permissions import check_accessibility_permission, check_input_monitoring_
 
 logger = logging.getLogger(__name__)
 
+
+def ignore_system_defined_key_events() -> None:
+    """
+    Keep pynput's key listener away from "system-defined" events (media keys, and the extra
+    event Caps Lock sends). pynput turns those into an NSEvent on its listener thread, and
+    for Caps Lock macOS then runs keyboard-layout code that may only run on the main thread:
+    macOS stops Utter (crash report 19 November 2026: dispatch_assert_queue_fail in
+    TSMSetCapsLockKeyTransitionDetected, from +[NSEvent eventWithCGEvent:] in the event tap),
+    whenever an Utter window is in front. Utter's hotkeys never use those keys, so the
+    listener does not ask macOS for them at all. Normal keys and modifiers are unchanged.
+    """
+    try:
+        import Quartz
+        from pynput.keyboard import _darwin
+    except Exception:  # not macOS
+        return
+    system_defined = Quartz.CGEventMaskBit(Quartz.NSSystemDefined)
+    if _darwin.Listener._EVENTS & system_defined:
+        _darwin.Listener._EVENTS &= ~system_defined
+
+
+ignore_system_defined_key_events()
+
 # While the dictation key is held, check the keyboard's physical state this often, so a
 # missed key-up can never leave dictation stuck in hold mode.
 WATCHDOG_INTERVAL_SEC = 0.25

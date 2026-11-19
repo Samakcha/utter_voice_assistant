@@ -64,3 +64,16 @@ def test_esc_only_acts_when_session_active():
     is_active = True
     mgr._handle_cancel_trigger()
     assert cancel_called, "Esc must trigger cancel when session is active"
+
+
+def test_key_listener_never_receives_system_defined_events():
+    # Caps Lock sends one; pynput converting it off the main thread made macOS stop Utter
+    import Quartz
+    from pynput.keyboard import _darwin
+    import interface.hotkeys  # noqa: F401  (applies the change on import)
+    mask = _darwin.Listener._EVENTS
+    assert not mask & Quartz.CGEventMaskBit(Quartz.NSSystemDefined)
+    for needed in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp, Quartz.kCGEventFlagsChanged):
+        assert mask & Quartz.CGEventMaskBit(needed)  # the hotkeys still see every key
+    interface.hotkeys.ignore_system_defined_key_events()  # running it twice changes nothing
+    assert _darwin.Listener._EVENTS == mask

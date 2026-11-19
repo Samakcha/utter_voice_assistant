@@ -410,3 +410,29 @@ def test_setup_window_opens_from_the_menu(monkeypatch, tmp_path):
     assert app.welcome._restart is None  # restarting needs Utter.app
     app.welcome.close()
     app.menu_icon.stop()
+
+
+def test_window_comes_in_front_of_other_apps(monkeypatch):
+    # A menu bar app is not brought forward by macOS at start, and the polite activate()
+    # lets the app in front keep its place: the window must take the front firmly
+    import interface.welcome_window as ww
+    window, events, _ = _window({"microphone": True, "accessibility": True, "input_monitoring": True})
+    calls = []
+
+    class FakeApp:
+        def activateIgnoringOtherApps_(self, flag):
+            calls.append(("activate_ignoring_others", flag))
+
+    class FakeWindow:
+        def makeKeyAndOrderFront_(self, sender):
+            calls.append("key_and_front")
+
+        def orderFrontRegardless(self):
+            calls.append("front_regardless")
+    monkeypatch.setattr(ww, "_shared_app", lambda: FakeApp())
+    real = window.window
+    window.window = FakeWindow()
+    window._bring_to_front()
+    assert calls == [("activate_ignoring_others", True), "key_and_front", "front_regardless"]
+    window.window = real
+    window.close()

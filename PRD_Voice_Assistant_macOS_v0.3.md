@@ -295,7 +295,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 937 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 939 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -334,7 +334,7 @@ voice-assistant/
   dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       937 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       939 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -385,7 +385,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 937 passing |
+| Automated tests | 939 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -424,6 +424,8 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 | Risk of a silent model download at runtime | If the configured model was not in `models/`, the transcriber passed a Hugging Face repo ID to mlx-whisper, which would fetch weights from the network | Resolve local weights only; fall back to `small`; `HF_HUB_OFFLINE=1` in `main.py`; tests prove a repo ID is never returned. |
 | Turbo wrote "Thank you." for a silent clip | `large-v3-turbo` hallucinates on digital silence, and its `no_speech_prob` is always 0, so Whisper's own check cannot catch it | Audio peaking below −60 dBFS is skipped before Whisper (real speech here peaks at −13 to −26 dBFS). |
 | A test wrote a fake note backup into the real `~/Library/Application Support/` folder | A test fixture relied on the new default backup location | Fixture points at a temporary folder; `conftest.py` now fails any test that writes into the real data folder. |
+| Utter quit by itself when Caps Lock was pressed while its sign-in window was in front (19 November 2026) | Caps Lock also sends a "system-defined" event; pynput turned it into an NSEvent on its listener thread, and macOS's keyboard-layout code for Caps Lock may only run on the main thread, so macOS stopped the app (crash report: `dispatch_assert_queue_fail` in `TSMSetCapsLockKeyTransitionDetected`) | The key listener no longer asks macOS for system-defined events (media keys, Caps Lock's extra event); Utter's hotkeys never use them (`interface/hotkeys.py`). |
+| The sign-in window opened behind other apps' windows at start (19 November 2026) | A menu bar app is not brought forward by macOS when it starts, and the newer "polite" activate lets the app in front keep its place | The window takes the front firmly (activate ignoring other apps, then order front regardless), and asks again 0.6 s later in case macOS was still launching Utter. |
 | Accessibility stayed "missing" although switched on for Utter (18 November 2026) | The switch belonged to an older, ad-hoc-signed build; macOS does not count it for builds signed with the certificate | The user ran `tccutil reset Accessibility com.utter.mac` and turned it on again; the welcome window now shows this fix when a row stays off (6.16). |
 | Early word-list correction changed "certs" → "Curtis", "Korn" → "Karan" and "github" inside a URL (found by a prose sweep before release) | Vowel-slip matching was too loose, and URLs were treated as normal words | Vowel slips need the first three letters to match and lengths within one; words inside URLs, emails and identifiers are skipped. |
 

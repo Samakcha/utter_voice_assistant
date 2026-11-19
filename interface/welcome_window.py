@@ -125,6 +125,10 @@ def _link(title: str, frame, target):
     return button
 
 
+def _shared_app():
+    return AppKit.NSApplication.sharedApplication()
+
+
 def _in_background(work: Callable[[], None]) -> None:
     threading.Thread(target=work, name="account", daemon=True).start()
 
@@ -389,14 +393,23 @@ class WelcomeWindow:
         self.window.center()
         self._bring_to_front()
         self._start_timer()
+        # At startup macOS may still be launching Utter and ignore the first request: ask
+        # once more a moment later (only if the window is still open)
+        AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            0.6, False, lambda _t: self._bring_to_front() if self.is_visible else None)
 
     def _bring_to_front(self) -> None:
-        app = AppKit.NSApplication.sharedApplication()
+        """In front of every other app's windows, ready to type in. Utter is a menu bar app,
+        so macOS does not bring it forward by itself when it starts; and the newer
+        "polite" activate() lets the app in front keep its place. So: take the front
+        firmly (ignoring other apps), and put the window on top even if macOS hesitates."""
+        app = _shared_app()
         try:
-            app.activate()  # macOS 14+
-        except AttributeError:
             app.activateIgnoringOtherApps_(True)
+        except AttributeError:
+            app.activate()
         self.window.makeKeyAndOrderFront_(None)
+        self.window.orderFrontRegardless()
 
     def _start_timer(self) -> None:
         if self._timer is None:
