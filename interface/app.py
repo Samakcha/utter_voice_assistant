@@ -61,6 +61,13 @@ from .whatsapp_control import (
 
 logger = logging.getLogger(__name__)
 
+NO_MODEL_STATUS = "⚠️ No speech model: run ./install.sh"
+NO_MODEL_TITLE = "Utter has no speech model yet"
+NO_MODEL_MESSAGE = ("Utter needs its speech model to turn what you say into text, and it never "
+                    "downloads anything by itself.\n\nOpen Terminal, go to the folder you downloaded "
+                    "Utter into, and run:\n\n./install.sh\n\nIt downloads the model once (1.6 GB), "
+                    "then Utter works offline.")
+
 
 def _paste_allowed() -> bool:
     """macOS lets Utter press ⌘V for you only with Accessibility; without it the keystroke is
@@ -256,22 +263,35 @@ class VoiceAssistantApp(rumps.App):
         account = getattr(self, "account", None)
         if account is not None and account.locked:
             return "🔒 Sign in to use Utter"
+        if self.speech_model_missing():
+            return NO_MODEL_STATUS
         missing = getattr(self, "missing_permissions", [])
         if missing:
             return f"⚠️ Needs permission: {', '.join(missing)} (see Check Permissions)"
         return "Status: Ready (Mic closed)"
 
+    def speech_model_missing(self) -> bool:
+        """No Whisper weights on this Mac (install.sh downloads them; Utter never does)."""
+        transcriber = getattr(self, "transcriber", None)
+        return transcriber is not None and getattr(transcriber, "model_path", "") is None
+
     def on_model_ready(self) -> None:
         """Called when transcriber completes loading and warmup on worker thread."""
         self.model_ready = True
+        missing_model = self.speech_model_missing()
 
         def _update_ui():
             if self.is_running and not self.session_manager.is_listening:
                 self._set_menu_state(menu_icon.READY)
                 self.status_item.title = self._ready_status_text()
+            if missing_model:
+                rumps.alert(NO_MODEL_TITLE, NO_MODEL_MESSAGE)
 
         run_on_main_thread(_update_ui)
-        logger.info("Utter is ready for voice sessions.")
+        if missing_model:
+            logger.error("No speech model on this Mac: Utter can't turn speech into text.")
+        else:
+            logger.info("Utter is ready for voice sessions.")
 
     def start_listeners(self) -> None:
         """Start hotkey listener (and list the installed apps in the background)."""

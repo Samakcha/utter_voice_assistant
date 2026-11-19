@@ -99,14 +99,14 @@ def resolve_local_model(
         if fallback:
             logger.warning(
                 "Whisper model '%s' is not downloaded in %s. Using '%s' instead. "
-                "Download it with scripts/benchmark_whisper.py --models %s.",
-                model_size, models_dir, fallback_size, model_size,
+                "Download it by running ./install.sh (or scripts/download_model.py) in Utter's folder.",
+                model_size, models_dir, fallback_size,
             )
             return fallback, fallback_size
 
     logger.error(
         "No local Whisper weights found for '%s' (or fallback '%s') in %s. "
-        "Transcription is unavailable until a model is downloaded.",
+        "Transcription is unavailable until a model is downloaded: run ./install.sh in Utter's folder.",
         model_size, fallback_size, models_dir,
     )
     return None, model_size
@@ -333,7 +333,7 @@ class MLXWhisperTranscriber(BaseTranscriber):
         if self.model_path is None:
             raise RuntimeError(
                 f"Whisper model '{self.config.model_size}' is not downloaded. "
-                "Run scripts/benchmark_whisper.py to fetch it."
+                "Run ./install.sh in Utter's folder to download it."
             )
 
         audio_array, duration_sec = load_audio_array(audio)

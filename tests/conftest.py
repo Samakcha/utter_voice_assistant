@@ -13,6 +13,8 @@ Ensures that across the ENTIRE test suite:
    project's Whisper models: engine.config.data_paths() points at a per-test folder.
 7. No test reads the user's real personal word list: any word-list path inside the real
    data folder is redirected to an empty per-test file location.
+8. No test opens a real modal alert (rumps.alert waits for a click, so the run would hang):
+   alerts are recorded instead; tests that check alerts patch rumps.alert themselves.
 """
 
 from pathlib import Path
@@ -124,6 +126,14 @@ def global_safety_net(monkeypatch):
 
 
 # 7. Real personal word list: tests must not depend on (or see) the user's own names.
+@pytest.fixture(autouse=True)
+def no_real_alerts(monkeypatch):
+    import rumps
+    shown = []
+    monkeypatch.setattr(rumps, "alert", lambda *a, **k: shown.append((a, k)) or 1)
+    return shown
+
+
 @pytest.fixture(autouse=True)
 def isolate_real_word_list(monkeypatch, tmp_path):
     from engine.config import DEFAULT_DATA_DIR

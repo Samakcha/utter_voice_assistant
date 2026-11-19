@@ -1,16 +1,20 @@
-# Voice Assistant dependencies (macOS Apple Silicon)
+# What Utter needs to run (macOS, Apple Silicon). install.sh installs these, and then
+# mlx-whisper on its own (`uv pip install --no-deps "mlx-whisper>=0.4.0"`): mlx-whisper lists
+# PyTorch, but only its model-conversion code uses it, never Utter. Its other needs are here.
 sounddevice>=0.5.0
 numpy>=2.0.0
 rumps>=0.4.0
 pynput>=1.8.0
 mlx>=0.20.0
-mlx-whisper>=0.4.0
 pyobjc-core>=12.0
 pyobjc-framework-Cocoa>=12.0
 pyobjc-framework-ApplicationServices>=12.0
 pyobjc-framework-Quartz>=12.0
 pyobjc-framework-AVFoundation>=12.0
-# Developer tools only, not in Utter.app: tests compare the voice detector with the PyTorch
-# Silero model, and scripts/export_vad_weights.py writes assets/silero_vad_16k.safetensors
-silero-vad>=6.0.0
-torch>=2.0.0
+# mlx-whisper's needs (without PyTorch)
+numba
+scipy
+tiktoken
+tqdm
+more-itertools
+huggingface_hub

@@ -1,0 +1,9 @@
+# For working on Utter: everything in requirements.txt, mlx-whisper with all it lists, the
+# tests, and the PyTorch voice detector that tests/test_vad.py compares Utter's numpy one
+# with (scripts/export_vad_weights.py). None of the extra ones go into Utter.app.
+#   uv pip install -r requirements-dev.txt
+-r requirements.txt
+mlx-whisper>=0.4.0
+pytest>=8.0
+silero-vad>=6.0.0
+torch>=2.0.0

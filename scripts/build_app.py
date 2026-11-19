@@ -4,6 +4,7 @@ Build Utter.app: a self-contained Mac app (its own Python and packages inside).
 
   uv run python scripts/build_app.py            build dist.noindex/Utter.app
   uv run python scripts/build_app.py --install  build, then copy it to /Applications
+                                                (or ~/Applications if you may not write there)
 
 Nothing is downloaded: the app is assembled from this project's code, the Python that
 `uv` already installed, and the packages already in .venv. The Whisper models and your
@@ -34,7 +35,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 APP_NAME = "Utter"
 BUNDLE_ID = "com.utter.mac"  # changing it later makes macOS treat Utter as a new app
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 MIN_MACOS = "14.0"
 SIGNING_IDENTITY = "Utter Developer"
 
@@ -248,12 +249,20 @@ def build(dist: Path = DIST) -> Path:
     return app
 
 
-def install(app: Path, applications: Path = Path("/Applications")) -> Path:
+def applications_folder() -> Path:
+    """/Applications, or ~/Applications for a Mac user who may not write there."""
+    system = Path("/Applications")
+    return system if os.access(system, os.W_OK) else Path.home() / "Applications"
+
+
+def install(app: Path, applications: Optional[Path] = None) -> Path:
+    applications = applications or applications_folder()
+    applications.mkdir(parents=True, exist_ok=True)
     dest = applications / app.name
     if dest.exists():
         running = subprocess.run(["pgrep", "-f", str(dest / "Contents" / "MacOS")], capture_output=True)
         if running.returncode == 0:
-            raise SystemExit("Utter is running from /Applications. Quit it first (menu bar icon > Quit).")
+            raise SystemExit(f"Utter is running from {applications}. Quit it first (menu bar icon > Quit).")
         remove([dest])
     run(["ditto", str(app), str(dest)])
     log(f"Installed {dest}")
@@ -263,12 +272,13 @@ def install(app: Path, applications: Path = Path("/Applications")) -> Path:
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Build Utter.app (no downloads).")
     parser.add_argument("--install", action="store_true", help="Also copy it to /Applications.")
+    parser.add_argument("--applications", type=Path, help="Install into this folder instead.")
     args = parser.parse_args(argv)
     if sys.platform != "darwin" or os.uname().machine != "arm64":
         raise SystemExit("Utter.app can only be built on an Apple Silicon Mac.")
     app = build()
     if args.install:
-        install(app)
+        install(app, args.applications)
     return 0
 
 
