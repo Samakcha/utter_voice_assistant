@@ -80,6 +80,7 @@ class Session:
     expires_at: float  # seconds since 1970
     email: str
     user_id: str
+    last_used: float = 0.0  # when Utter was last used (a hotkey); 0: not known yet
 
     def expires_soon(self, now: Optional[float] = None) -> bool:
         return (now if now is not None else time.time()) >= self.expires_at - REFRESH_MARGIN_SEC
@@ -93,7 +94,7 @@ class Session:
             data = json.loads(text)
             return cls(access_token=str(data["access_token"]), refresh_token=str(data["refresh_token"]),
                        expires_at=float(data["expires_at"]), email=str(data.get("email", "")),
-                       user_id=str(data.get("user_id", "")))
+                       user_id=str(data.get("user_id", "")), last_used=float(data.get("last_used", 0.0)))
         except (ValueError, KeyError, TypeError):
             return None
 
@@ -213,7 +214,7 @@ class SupabaseAuth:
             expires_at = self._clock() + float(data.get("expires_in", 3600))
         return Session(access_token=str(data["access_token"]), refresh_token=str(data["refresh_token"]),
                        expires_at=float(expires_at), email=str(user.get("email") or email),
-                       user_id=str(user.get("id", "")))
+                       user_id=str(user.get("id", "")), last_used=self._clock())
 
     def _call(self, method: str, path: str, body: Optional[dict], token: Optional[str] = None) -> dict:
         if not self.configured:

@@ -480,8 +480,10 @@ class WelcomeWindow:
             self.spinner.stopAnimation_(None)
         message = form.error or form.info
         self.account_message.setStringValue_(message)
-        self.account_message.setTextColor_(AppKit.NSColor.systemRedColor() if form.error
-                                           else AppKit.NSColor.secondaryLabelColor())
+        self.account_message.setTextColor_(
+            AppKit.NSColor.systemRedColor() if form.error else
+            AppKit.NSColor.systemOrangeColor() if (form.suggestion or form.info.startswith("You haven't")) else
+            AppKit.NSColor.secondaryLabelColor())
         links = form.links()
         for i, link in enumerate(self.account_links):
             if i < len(links):
@@ -518,6 +520,9 @@ class WelcomeWindow:
             form.signed_out()
             self._update_account(focus=True)
             return
+        if action == af.USE_SUGGESTION and form.suggestion:
+            self.email_field.setStringValue_(form.suggestion)
+            action = af.SUBMIT
         email = str(self.email_field.stringValue())
         password = str(self.password_field.stringValue())
         code = str(self.code_field.stringValue())

@@ -330,7 +330,9 @@ class VoiceAssistantApp(rumps.App):
         if not self.account.enabled:
             return {}
         return {
-            "account_form": account_form.AccountForm(self.account.auth, signed_in_email=self.account.email),
+            "account_form": account_form.AccountForm(
+                self.account.auth, signed_in_email=self.account.email,
+                last_email=self.account.last_email, notice=self.account.notice),
             "signed_in": self.account.signed_in_with,
             "sign_out": self.account.sign_out,
         }
@@ -483,8 +485,11 @@ class VoiceAssistantApp(rumps.App):
             logger.info("Voice assistant stopped.")
 
     def _blocked_until_sign_in(self) -> bool:
-        """Utter does nothing until someone signs in; the hotkey opens the sign-in window."""
+        """Utter does nothing until someone signs in; the hotkey opens the sign-in window.
+        Each use while signed in restarts the 7-day clock (7 days unused: sign in again)."""
+        self.account.check_inactive()
         if not self.account.locked:
+            self.account.mark_used()
             return False
         logger.info("Hotkey pressed while signed out: showing the sign-in window.")
 

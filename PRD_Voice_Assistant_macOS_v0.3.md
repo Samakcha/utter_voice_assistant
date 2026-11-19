@@ -228,11 +228,13 @@ Decided 19 November 2026: everyone signs in once, so the number of users can be 
 2. **Locked until signed in:** both hotkeys do nothing but show "Sign in to use Utter" and open the sign-in window; the first menu line reads "🔒 Sign in to use Utter". The menu has **Sign In…**, or **Sign Out (email)** with a confirmation.
 3. **The forms:** *create* (email, password of 8+ characters, "I already have an account"); *check your email* (the 6-digit code from the email; "Send the code again", "Use a different email"); *sign in* ("Forgot password?", "Create an account"); *reset* (code from the email plus a new password); *signed in* ("Use a different account"). Typed values are checked before anything is sent; errors are plain and red ("Wrong email or password.", "An account with this email already exists. Sign in instead.", "Can't reach the internet…"). Calls run on a background thread with a spinner; the window and menu bar never freeze.
 4. **Codes instead of links:** confirming an email and resetting a password use the 6-digit code (`{{ .Token }}`) typed into Utter, so no website is needed. Signing in before confirming asks for the code (and sends a new one). An already-registered email is detected although Supabase hides it (empty `identities`).
-5. **Staying signed in:** the session (access and refresh tokens, email, user id; never the password) is kept in the macOS Keychain (service `com.utter.mac.account`), read at every start, and renewed in the background at start and every 6 hours. **Offline, Utter keeps working**; only if Supabase says the login is no longer valid (account removed or blocked, token revoked) is the user signed out.
+5. **Staying signed in:** the session (access and refresh tokens, email, user id, last used; never the password) is kept in the macOS Keychain (service `com.utter.mac.account`), read at every start, and renewed in the background at start and every 6 hours. **Offline, Utter keeps working**; if Supabase says the login is no longer valid (account removed or blocked, token revoked) the user is signed out.
+5a. **7 days without use: sign in again** (decided 19 November 2026). Each use of a hotkey (command or dictation) restarts a 7-day clock; just having Utter open does not count, nor does renewing the login. After 7 days without use, the next start or hotkey signs out and opens "Sign in to Utter" with "You haven't used Utter for 7 days. Please sign in again." and the email pre-filled; only the password is needed, no code. Supabase's own inactivity timeout is a paid feature, so the clock is kept by Utter (`INACTIVE_DAYS` in `interface/account_manager.py`); "last used" is written to the Keychain at most once an hour. Logins saved before the rule start counting from the first start.
+5b. **No fake or mistyped emails** (the user's requirement: they would give the product a bad name). Email confirmation stays on: the 6-digit code at sign-up, once ever, is the only way to prove an address is real. Before anything is sent, `engine/email_check.py` catches typos of well-known providers ("sam@gmial.com" → "Did you mean sam@gmail.com?", with "Yes, use …" / "No, mine is right"; also .con/.co/missing dot) and refuses throwaway addresses (mailinator, yopmail, 10minutemail and about 30 others).
 6. **The project:** `SUPABASE_URL` and `SUPABASE_ANON_KEY` in `engine/config.py`, holding the project's **publishable key** (`sb_publishable_…`, Supabase's new name for the anon key; public by design). The **secret key** (`sb_secret_…`, formerly service_role) must never be in the app. The key is sent only as the `apikey` header; `Authorization: Bearer` carries a signed-in user's token, never the project key (new publishable keys are refused there). While they are empty, accounts are off and nobody is locked out (developer copies). `[account] url / anon_key` in `config.toml` can point a copy at another project; signing in cannot be switched off there. Plain HTTPS with Python's own `urllib` and macOS's certificates: no new package.
-7. **Supabase setup (done by the owner in the Supabase dashboard):** create the project; Authentication > Email: keep "Confirm email" on; edit the **Confirm signup** and **Reset password** templates to show `{{ .Token }}` (the 6-digit code); before real users, add a **custom SMTP** sender (Supabase's own sends only about 2 emails an hour and only to the project team's addresses). The user count is in Authentication > Users.
+7. **Supabase setup (done by the owner in the Supabase dashboard):** project "Utter" created 19 November 2026 (free plan; "Grant API access to new tables" off, "RLS on new tables" on). Keep "Confirm email" on. **Custom SMTP is required:** Supabase's own sender reaches only the project team (about 2 emails an hour), and the templates can only be edited once custom SMTP is set. The chosen sender is a dedicated Gmail account with an app password (smtp.gmail.com, port 465, about 500 emails a day; a sender on Utter's own domain later, Milestone 4). Then the **Confirm signup** and **Reset password** templates show `{{ .Token }}` (the 6-digit code). The user count is in Authentication > Users.
 8. **Limits:** a determined person could remove the check from their copy (it is a local app); this counts users, it is not copy protection. Once there are real users' emails, a privacy policy is needed (Milestone 4 website).
-9. **Checked:** 36 new automated tests against a fake Supabase (sign-up with code, duplicate email, wrong password in both error styles, unconfirmed email, refresh and revoked login, offline, password reset, Keychain round trip, the form's modes, the window's required step and sign-in window, the app's lock and menu). The Keychain bridge was tried for real once (a test item written, read, updated and removed). Not yet tried against the real Supabase project: waiting for its URL and anon key.
+9. **Checked:** 36 new automated tests against a fake Supabase (sign-up with code, duplicate email, wrong password in both error styles, unconfirmed email, refresh and revoked login, offline, password reset, Keychain round trip, the form's modes, the window's required step and sign-in window, the app's lock and menu). The Keychain bridge was tried for real once (a test item written, read, updated and removed). Connection to the real project checked from inside the built app (HTTPS, `/auth/v1/settings`: email sign-in on, confirm email on). A real sign-up is the user's test, after the email sender is set up. Later: 34 more tests for the typo check, throwaway addresses and the 7-day rule.
 
 ### 6.11 Personal word list
 Fixes misheard names and unusual terms ("Sanavi" → "Saanvi", "Superbase" → "Supabase") without retraining anything.
@@ -293,7 +295,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 901 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 937 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -322,7 +324,7 @@ voice-assistant/
   main.py                      entry point (startup is a function, so tests can run it)
   config.toml                  all tunable values, every key commented
   engine/                      audio_capture, vad, session, transcriber, audio_utils, commands,
-                               account, actions, apps, stop_phrases, chunk_joiner, cleanup, insertion, notes_writer, vocabulary,
+                               account, email_check, actions, apps, stop_phrases, chunk_joiner, cleanup, insertion, notes_writer, vocabulary,
                                config, models
   interface/                   app, menu_icon, waveform, hotkeys, key_events, permissions, overlay, clipboard,
                                setup_flow, welcome_window, login_item, account_form, account_manager, keychain,
@@ -332,7 +334,7 @@ voice-assistant/
   dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       901 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       937 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -383,7 +385,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 901 passing |
+| Automated tests | 937 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 

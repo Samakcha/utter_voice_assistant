@@ -300,10 +300,10 @@ def test_offline_keeps_you_signed_in_but_a_revoked_login_does_not(server):
     manager.signed_in_with(old)
     server.online = False
     manager.refresh()
-    assert manager.session == old  # offline: still signed in, Utter keeps working
+    assert manager.session.access_token == old.access_token  # offline: still signed in, Utter keeps working
     server.online = True
     manager.refresh()
-    assert manager.session != old and not manager.locked  # renewed
+    assert manager.session.access_token != old.access_token and not manager.locked  # renewed
     server.refresh_tokens.clear()  # account removed on the server
     manager.session = dataclasses.replace(manager.session, expires_at=time.time() - 1)
     manager.refresh()
@@ -312,7 +312,7 @@ def test_offline_keeps_you_signed_in_but_a_revoked_login_does_not(server):
 
 def test_a_fresh_login_is_not_renewed_needlessly(server):
     manager = _manager(server)
-    manager.session = Session("a", "r", time.time() + 3600, "me@example.com", "u")
+    manager.session = Session("a", "r", time.time() + 3600, "me@example.com", "u", last_used=time.time())
     manager.refresh()
     assert server.requests == []
 
@@ -463,7 +463,7 @@ def _app(monkeypatch, tmp_path, server, signed_in=False):
     app.setup_record = tmp_path / "setup.json"
     manager = _manager(server)
     if signed_in:
-        manager.session = Session("a", "r", time.time() + 3600, "me@example.com", "u1")
+        manager.session = Session("a", "r", time.time() + 3600, "me@example.com", "u1", last_used=time.time())
     manager.on_change = app._on_account_change
     app.account = manager
     app._refresh_account_menu()
@@ -536,4 +536,159 @@ def test_setup_window_includes_the_account_step_when_accounts_are_on(monkeypatch
     app.show_sign_in()
     assert app.welcome.flow.steps == ["account"]
     app.welcome.close()
+    app.menu_icon.stop()
+
+
+# ---- No fake or mistyped emails ------------------------------------------------------------
+
+from engine.email_check import is_disposable, suggest_email  # noqa: E402
+
+
+@pytest.mark.parametrize("typed, fixed", [
+    ("me@gmial.com", "me@gmail.com"), ("me@gmail.con", "me@gmail.com"), ("me@gmai.com", "me@gmail.com"),
+    ("me@gmail.co", "me@gmail.com"), ("me@gmailcom", "me@gmail.com"), ("me@gnail.com", "me@gmail.com"),
+    ("me@yaho.com", "me@yahoo.com"), ("me@hotmial.com", "me@hotmail.com"), ("me@outlok.com", "me@outlook.com"),
+    ("me@iclod.com", "me@icloud.com"), ("Me.Name@GMIAL.com", "Me.Name@gmail.com"),
+])
+def test_common_email_typos_are_caught(typed, fixed):
+    assert suggest_email(typed) == fixed
+
+
+@pytest.mark.parametrize("email", [
+    "me@gmail.com", "me@mail.com", "me@gmx.com", "me@me.com", "me@mac.com", "me@yahoo.co.in",
+    "me@mit.edu", "me@company.in", "me@email.com", "me@gmail.com.au", "not-an-email",
+])
+def test_real_addresses_are_left_alone(email):
+    assert suggest_email(email) is None
+
+
+def test_throwaway_addresses_are_refused():
+    assert is_disposable("x@mailinator.com") and is_disposable("x@sub.yopmail.com")
+    assert not is_disposable("x@gmail.com") and not is_disposable("broken")
+
+
+def test_sign_up_asks_did_you_mean_before_sending_anything(auth, server):
+    form = af.AccountForm(auth)
+    assert form.perform(af.SUBMIT, "me@gmial.com", "a-good-password") is None
+    assert form.info == "Did you mean me@gmail.com?" and server.requests == []
+    assert form.links()[0] == ("Yes, use me@gmail.com", af.USE_SUGGESTION)
+    form.perform(af.SUBMIT, "me@gmail.com", "a-good-password")  # the window fills in the fix
+    assert form.mode == af.CONFIRM and server.requests[0][3]["email"] == "me@gmail.com"
+
+
+def test_no_mine_is_right_sends_the_typed_email(auth, server):
+    form = af.AccountForm(auth)
+    form.perform(af.SUBMIT, "me@gmai.com", "a-good-password")
+    assert form.suggestion == "me@gmail.com"
+    form.perform(af.KEEP_EMAIL, "me@gmai.com", "a-good-password")
+    assert form.mode == af.CONFIRM and server.requests[0][3]["email"] == "me@gmai.com"
+
+
+def test_sign_up_with_a_throwaway_address_is_refused(auth, server):
+    form = af.AccountForm(auth)
+    form.perform(af.SUBMIT, "me@mailinator.com", "a-good-password")
+    assert form.error == af.DISPOSABLE_MESSAGE and server.requests == []
+
+
+def test_window_did_you_mean_fills_in_the_fix(auth, server):
+    window, events = _window(auth, start_step="account")
+    window.email_field.setStringValue_("me@gmial.com")
+    window.password_field.setStringValue_("a-good-password")
+    window.account(af.SUBMIT)
+    assert window.account_message.stringValue() == "Did you mean me@gmail.com?" and server.requests == []
+    window.account(af.USE_SUGGESTION)
+    assert window.email_field.stringValue() == "me@gmail.com" and window.account_form.mode == af.CONFIRM
+    window.close()
+
+
+# ---- Seven days without using Utter: sign in again -----------------------------------------
+
+class Clock:
+    def __init__(self, now=1_000_000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+DAY = 24 * 3600
+
+
+def _clocked_manager(server):
+    from interface import account_manager as am
+    clock = Clock()
+    manager = AccountManager(SupabaseAuth(URL, KEY, transport=server, clock=clock), MemoryKeychain(), clock=clock)
+    server.confirm_email = False
+    manager.signed_in_with(manager.auth.sign_up("me@example.com", "a-good-password"))
+    return manager, clock, am
+
+
+def test_using_utter_keeps_you_signed_in(server):
+    manager, clock, am = _clocked_manager(server)
+    for _ in range(10):  # used every 6 days for two months
+        clock.now += 6 * DAY
+        assert not manager.check_inactive()
+        manager.mark_used()
+    assert not manager.locked
+
+
+def test_seven_days_unused_asks_to_sign_in_again(server):
+    manager, clock, am = _clocked_manager(server)
+    clock.now += 7 * DAY - 60
+    assert not manager.check_inactive()
+    clock.now += 120
+    assert manager.check_inactive() and manager.locked
+    assert manager.notice == am.INACTIVE_NOTICE and manager.last_email == "me@example.com"
+    form = af.AccountForm(manager.auth, last_email=manager.last_email, notice=manager.notice)
+    assert form.mode == af.SIGN_IN and form.email == "me@example.com" and "7 days" in form.info
+    session = form.perform(af.SUBMIT, "me@example.com", "a-good-password")  # password only, no code
+    manager.signed_in_with(session)
+    assert not manager.locked and manager.notice == ""
+
+
+def test_seven_days_count_across_restarts(server):
+    manager, clock, am = _clocked_manager(server)
+    clock.now += 8 * DAY  # the Mac was off, or Utter was never used
+    again = AccountManager(manager.auth, manager.keychain, clock=clock)
+    assert again.load() is False and again.locked and again.notice == am.INACTIVE_NOTICE
+
+
+def test_last_used_is_saved_at_most_once_an_hour(server):
+    manager, clock, am = _clocked_manager(server)
+    writes = []
+    original = manager.keychain.write
+    manager.keychain.write = lambda text: writes.append(text) or original(text)
+    for _ in range(30):
+        clock.now += 60  # a hotkey every minute for half an hour
+        manager.mark_used()
+    assert writes == []
+    clock.now += am.SAVE_USE_EVERY_SEC
+    manager.mark_used()
+    assert len(writes) == 1 and Session.from_json(writes[0]).last_used == clock.now
+
+
+def test_logins_saved_before_the_rule_start_counting_now(server):
+    clock = Clock()
+    old = Session("a", "r", clock.now + 3600, "me@example.com", "u")  # no last_used
+    manager = AccountManager(SupabaseAuth(URL, KEY, transport=server), MemoryKeychain(old.to_json()), clock=clock)
+    assert manager.load() and manager.session.last_used == clock.now
+
+
+def test_renewing_the_login_does_not_count_as_use(server):
+    manager, clock, am = _clocked_manager(server)
+    used = manager.session.last_used
+    manager.session = dataclasses.replace(manager.session, expires_at=0)
+    clock.now += DAY
+    manager.refresh()
+    assert manager.session.last_used == used  # only hotkeys count, not the app running
+
+
+def test_a_hotkey_after_seven_days_opens_sign_in(monkeypatch, tmp_path, server):
+    app_mod, app = _app(monkeypatch, tmp_path, server, signed_in=True)
+    app.account.session = dataclasses.replace(app.account.session, last_used=time.time() - 8 * DAY)
+    shown, started = [], []
+    monkeypatch.setattr(app, "show_sign_in", lambda *_: shown.append(True))
+    monkeypatch.setattr(app.session_manager, "start_session", lambda mode: started.append(mode))
+    app._on_dictation_hotkey()
+    assert started == [] and shown == [True] and app.account.locked
     app.menu_icon.stop()
