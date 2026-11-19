@@ -77,3 +77,49 @@ def test_key_listener_never_receives_system_defined_events():
         assert mask & Quartz.CGEventMaskBit(needed)  # the hotkeys still see every key
     interface.hotkeys.ignore_system_defined_key_events()  # running it twice changes nothing
     assert _darwin.Listener._EVENTS == mask
+
+
+def test_key_listener_thread_never_reads_the_keyboard_layout(monkeypatch):
+    # pynput read it on its own thread each time it started; with a Utter window in front
+    # macOS stopped Utter for that (pressing "Press keys…" in Settings restarts the listener)
+    import contextlib
+    import threading
+    from pynput.keyboard import _darwin
+    import interface.hotkeys as hotkeys
+
+    reads = []
+
+    @contextlib.contextmanager
+    def reading_layout():
+        reads.append(threading.current_thread() is threading.main_thread())
+        yield ("kbd", b"layout")
+
+    monkeypatch.setattr(hotkeys, "_original_keycode_context", reading_layout)
+    monkeypatch.setattr(hotkeys, "_keyboard_layout", None)
+    assert _darwin.keycode_context is not reading_layout  # pynput's listener uses Utter's
+
+    seen = []
+
+    def listener_thread():
+        assert hotkeys.refresh_keyboard_layout() is False  # off the main thread: not read
+        with _darwin.keycode_context() as context:
+            seen.append(context)
+
+    assert hotkeys.refresh_keyboard_layout() is True  # what HotkeyManager.start() does
+    thread = threading.Thread(target=listener_thread)
+    thread.start()
+    thread.join()
+    assert seen == [("kbd", b"layout")]
+    assert reads == [True]  # read once, on the main thread only
+
+
+def test_hotkey_manager_start_reads_the_layout_first(monkeypatch):
+    import interface.hotkeys as hotkeys
+    calls = []
+    monkeypatch.setattr(hotkeys, "refresh_keyboard_layout", lambda: calls.append("layout"))
+    manager = hotkeys.HotkeyManager("<ctrl>+<alt>+m", "<ctrl>+<alt>+d")
+    monkeypatch.setattr(manager, "_verify_system_permissions", lambda: calls.append("perm") or False)
+    monkeypatch.setattr(hotkeys.keyboard, "GlobalHotKeys",
+                        lambda bindings: type("L", (), {"start": lambda self: None})())
+    manager.start()
+    assert calls[:2] == ["layout", "perm"]

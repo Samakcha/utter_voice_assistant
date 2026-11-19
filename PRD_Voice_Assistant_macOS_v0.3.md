@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Product name:** Utter (chosen 17 November 2026)
-**Status:** v0.7.0 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15). v0.5.0 adds the first-run welcome window (permissions with live ticks, a try-it step) and start at login (6.16). v0.6.0 requires an Utter account: sign in once with email and password, through Supabase, so the number of users can be counted (6.17). v0.7.0 adds the Settings window: every everyday setting in one window, saved and used at once, with no file to edit (6.18).
+**Status:** v0.7.0 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15). v0.5.0 adds the first-run welcome window (permissions with live ticks, a try-it step) and start at login (6.16). v0.6.0 requires an Utter account: sign in once with email and password, through Supabase, so the number of users can be counted (6.17). v0.7.0 adds the Settings window: every everyday setting in one window, saved and used at once, with no file to edit (6.18); recording a new shortcut no longer makes macOS stop Utter (the key listener reads the keyboard layout on the main thread).
 **Last updated:** 19 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -306,7 +306,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 968 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 970 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -346,7 +346,7 @@ voice-assistant/
   dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
   scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       968 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       970 tests; tests/data/eval_rules.csv (rule evaluation set)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -397,7 +397,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 968 passing |
+| Automated tests | 970 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 

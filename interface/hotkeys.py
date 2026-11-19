@@ -1,5 +1,6 @@
 """Global hotkey manager using pynput with explicit conflict and permission detection."""
 
+import contextlib
 import logging
 import queue
 import threading
@@ -44,6 +45,61 @@ def ignore_system_defined_key_events() -> None:
 
 
 ignore_system_defined_key_events()
+
+
+# The keyboard layout pynput's listener uses to name keys, read on the main thread.
+_keyboard_layout = None
+_original_keycode_context = None
+
+
+def refresh_keyboard_layout() -> bool:
+    """
+    Read the current keyboard layout now, if this is the main thread (macOS only lets the
+    main thread ask for it). pynput's key listener reads it again on its own thread each time
+    it starts, and macOS stops Utter for that whenever an Utter window is in front (crash
+    reports 19 November 2026: dispatch_assert_queue_fail in TSMGetInputSourceProperty, from
+    keycode_context in Listener._run, when the Settings window restarted the hotkeys after a
+    new shortcut was recorded). The listener now gets the layout read here instead.
+    Returns whether it was read.
+    """
+    global _keyboard_layout
+    if _original_keycode_context is None or threading.current_thread() is not threading.main_thread():
+        return False
+    try:
+        with _original_keycode_context() as context:
+            _keyboard_layout = context
+        return True
+    except Exception as e:
+        logger.debug("Could not read the keyboard layout: %s", e)
+        return False
+
+
+def use_main_thread_keyboard_layout() -> None:
+    """Give pynput's listener the layout read on the main thread (see refresh_keyboard_layout)."""
+    global _original_keycode_context
+    try:
+        from pynput.keyboard import _darwin
+    except Exception:  # not macOS
+        return
+    if _original_keycode_context is not None:
+        return
+    _original_keycode_context = _darwin.keycode_context
+
+    @contextlib.contextmanager
+    def keycode_context():
+        if _keyboard_layout is None and not refresh_keyboard_layout():
+            # Never read on the main thread yet (only possible off the app): read it here,
+            # as pynput always did.
+            with _original_keycode_context() as context:
+                yield context
+            return
+        yield _keyboard_layout
+
+    _darwin.keycode_context = keycode_context
+    refresh_keyboard_layout()
+
+
+use_main_thread_keyboard_layout()
 
 # While the dictation key is held, check the keyboard's physical state this often, so a
 # missed key-up can never leave dictation stuck in hold mode.
@@ -117,6 +173,7 @@ class HotkeyManager:
 
     def start(self) -> None:
         """Register and start listening for global hotkeys on a single listener thread."""
+        refresh_keyboard_layout()  # on the main thread: the listener thread must not read it
         has_accessibility = self._verify_system_permissions()
         hotkey_bindings = self._build_hotkey_map()
 
