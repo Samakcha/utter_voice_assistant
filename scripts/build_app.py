@@ -34,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 APP_NAME = "Utter"
 BUNDLE_ID = "com.utter.mac"  # changing it later makes macOS treat Utter as a new app
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 MIN_MACOS = "14.0"
 SIGNING_IDENTITY = "Utter Developer"
 
@@ -50,6 +50,10 @@ STDLIB_EXCLUDE = ["test", "idlelib", "tkinter", "turtledemo", "ensurepip", "lib2
 SITE_EXCLUDE = ["pip", "PyObjCTest", "_pytest", "pytest", "py.py", "pluggy", "iniconfig",
                 "pygments", "_distutils_hack", "distutils-precedence.pth"]
 SITE_EXCLUDE_PREFIXES = ["pip-", "pytest-", "pluggy-", "iniconfig-", "pygments-"]
+# Only needed by the developer tools (tests and scripts/export_vad_weights.py): the voice
+# detector runs with numpy since v0.7.1 (engine/vad.py). PyTorch and what only it needs
+# were about 700 MB of the app.
+DEV_ONLY_DISTRIBUTIONS = ["torch", "silero-vad", "sympy", "mpmath", "networkx", "jinja2", "markupsafe"]
 
 INFO_PLIST = {
     "CFBundleName": APP_NAME,
@@ -125,6 +129,19 @@ def make_icon(dest: Path, source: Path = ICON_SOURCE) -> None:
         run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest)])
 
 
+def installed_top_level(names: List[str]) -> List[str]:
+    """The folders and files in site-packages that these installed packages put there."""
+    from importlib.metadata import PackageNotFoundError, distribution
+    tops = set()
+    for name in names:
+        try:
+            files = distribution(name).files or []
+        except PackageNotFoundError:
+            continue
+        tops.update(f.parts[0] for f in files if f.parts and f.parts[0] != "..")
+    return sorted(tops)
+
+
 def copy_python(resources: Path) -> Path:
     """A private copy of Python with this project's packages inside its site-packages."""
     home = resources / "python"
@@ -137,6 +154,7 @@ def copy_python(resources: Path) -> Path:
     clone_tree(site_packages(), target)
     remove([target / name for name in SITE_EXCLUDE])
     remove([p for p in target.iterdir() if any(p.name.startswith(x) for x in SITE_EXCLUDE_PREFIXES)])
+    remove([target / name for name in installed_top_level(DEV_ONLY_DISTRIBUTIONS)])
     # The dylib names its own absolute path; make it relative to the app instead
     dylib = home / "lib" / "libpython3.12.dylib"
     run(["install_name_tool", "-id", "@rpath/libpython3.12.dylib", str(dylib)], stderr=subprocess.DEVNULL)

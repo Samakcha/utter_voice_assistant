@@ -1,7 +1,7 @@
 # PRD: Voice-Assisted Dictation & Command App for macOS
 
 **Product name:** Utter (chosen 17 November 2026)
-**Status:** v0.7.0 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15). v0.5.0 adds the first-run welcome window (permissions with live ticks, a try-it step) and start at login (6.16). v0.6.0 requires an Utter account: sign in once with email and password, through Supabase, so the number of users can be counted (6.17). v0.7.0 adds the Settings window: every everyday setting in one window, saved and used at once, with no file to edit (6.18); recording a new shortcut no longer makes macOS stop Utter (the key listener reads the keyboard layout on the main thread).
+**Status:** v0.7.1 (implemented and manually tested; replaces the v0.1 pre-development draft). v0.3.1 switched speech-to-text to Whisper `large-v3-turbo` with a local-only fallback. v0.3.2 stops saving session audio by default and moves personal data out of the project folder. v0.3.3 adds a personal word list for names and terms (section 6.11). v0.3.4 lets fixed commands run about 0.9 s sooner (early finish, 6.2). v0.3.5 adds hold-to-talk dictation (6.4). v0.3.6 adds an accuracy score measured on the user's own voice (10.1). v0.3.7 stops the score counting spelling-only differences as errors, and records the first real results (10.1). v0.3.8 completes Milestone 1: open any installed app by voice (6.12). v0.3.9 builds Milestone 2: dictation cleanup, removing "um"s, accidental repeats and clear self-corrections (6.13). v0.3.10 starts Milestone 3: the app is named Utter and the menu bar shows only a drawn icon that changes with the state (6.1). v0.3.11 moves everything out of the project folder: the data folder becomes `~/Library/Application Support/Utter`, with the user's own settings file and the Whisper models, and a log file is written to `~/Library/Logs/Utter` (6.14). v0.4.0 builds Utter as a real, self-contained Mac app, `Utter.app`, with its own Python inside (6.15). v0.5.0 adds the first-run welcome window (permissions with live ticks, a try-it step) and start at login (6.16). v0.6.0 requires an Utter account: sign in once with email and password, through Supabase, so the number of users can be counted (6.17). v0.7.0 adds the Settings window: every everyday setting in one window, saved and used at once, with no file to edit (6.18); recording a new shortcut no longer makes macOS stop Utter (the key listener reads the keyboard layout on the main thread). v0.7.1 completes stage 5, the final checks: the voice detector runs with numpy instead of PyTorch, with identical results, so Utter.app shrinks from 1.38 GB to 0.64 GB and starts about 1 s sooner (10.2).
 **Last updated:** 19 November 2026
 **Platform:** macOS, Apple Silicon (developed on a MacBook Air, M5, 16 GB RAM, 512 GB storage)
 **Build approach:** Code written by an AI coding agent (Antigravity), guided by this document and step-by-step prompts. Every step is planned first, approved, built, then tested by hand on the real machine.
@@ -198,7 +198,7 @@ Milestone 3, stage 1: nothing Utter needs lives in the project folder any more, 
 Milestone 3, stage 2: a double-clickable app in Applications instead of `uv run` in a terminal.
 
 1. **Build:** `uv run python scripts/build_app.py` makes `dist.noindex/Utter.app` (about 15 s); `--install` also copies it to `/Applications` (refused while Utter runs from there). **Nothing is downloaded:** the app is assembled from the project's code, the standalone Python that uv installed, and the packages in `.venv`, cloned on APFS (instant, no extra disk space until changed).
-2. **Inside the app** (about 1.4 GB): `Contents/MacOS/Utter` (launcher), `Contents/Resources/python` (a private Python 3.12 with the packages; tests, pip, pytest and tkinter left out), `Contents/Resources/app` (main.py, engine, interface, the shipped config.toml, assets), `Utter.icns` (from the 1024 px icon, 16 to 1024 px). Models, settings and personal data are **not** inside: they stay in `~/Library/Application Support/Utter` (6.14).
+2. **Inside the app** (about 0.64 GB since v0.7.1; 1.38 GB before, when PyTorch was inside): `Contents/MacOS/Utter` (launcher), `Contents/Resources/python` (a private Python 3.12 with the packages; tests, pip, pytest, tkinter, and PyTorch with the packages only it needs left out), `Contents/Resources/app` (main.py, engine, interface, the shipped config.toml, assets), `Utter.icns` (from the 1024 px icon, 16 to 1024 px). Models, settings and personal data are **not** inside: they stay in `~/Library/Application Support/Utter` (6.14).
 3. **Launcher:** a small C program that runs Python inside its own process (embedded), so macOS sees one app called Utter and asks for, and remembers, permissions as "Utter" (not Terminal or Python). Python ignores outside `PYTHON*` settings and user packages, runs in UTF-8 mode (apps get no language setting from macOS), and never writes `.pyc` files into the signed app (they are compiled at build time).
 4. **Info.plist:** bundle id `com.utter.mac` (changing it later makes macOS treat Utter as a new app), menu bar only (`LSUIElement`, no Dock icon), Apple Silicon only, macOS 14+, and the texts macOS shows in the Microphone and Automation prompts (without them macOS stops the app when it asks).
 5. **Signing:** with a free self-signed certificate named **"Utter Developer"** in the login keychain, every build is signed with it, so macOS keeps Utter's permissions across rebuilds; without one the build is signed ad hoc (it runs, but each rebuild needs the permissions granted again). Create it once in Keychain Access → Certificate Assistant → Create a Certificate… (Name: Utter Developer; Identity Type: Self-Signed Root; Certificate Type: Code Signing). No Apple account or payment.
@@ -297,7 +297,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Component | Choice | Notes |
 |---|---|---|
 | Speech-to-text | **mlx-whisper**, model `mlx-community/whisper-large-v3-turbo` (about 1.5 GB, stored in `models/whisper-large-v3-turbo-mlx`). Fallback: `whisper-small-mlx` (about 459 MB). | Runs on the Apple GPU. Loaded and run on **one dedicated worker thread**, warmed up at startup (about 1.5 s for turbo). Language "en"; `initial_prompt` empty by default; dictation and note chunks also get the personal word list hint (6.11). Weights are only ever loaded from `models/`: if the configured model is missing, the app uses `small` and logs a warning; if neither is present, transcription reports a clear error. Audio peaking below −60 dBFS is never sent to Whisper (see 11). |
-| Voice activity detection | **Silero VAD** (PyTorch/JIT model) | 512-sample chunks at 16 kHz; speech threshold **0.35** (lowered from 0.5 to catch soft speech); requires 2 consecutive speech chunks. |
+| Voice activity detection | **Silero VAD**, run with numpy since v0.7.1 (`engine/vad.py`; weights in `assets/silero_vad_16k.safetensors`, exported from silero-vad 6.2.3's PyTorch model; MIT licence) | 512-sample chunks at 16 kHz; speech threshold **0.35** (lowered from 0.5 to catch soft speech); requires 2 consecutive speech chunks. |
 | Audio capture | `sounddevice` | 16 kHz mono; stream opens only inside a session. |
 | Audio normalization | in-memory, before Whisper | Target peak -3 dBFS, max gain 20 dB. The saved WAV is untouched. Fixed poor accuracy on quiet speech. |
 | Rule layer | anchored regex grammar | Instant; no model. |
@@ -306,7 +306,7 @@ Milestone 2. The text you meant, not every sound you made. Rules only: offline, 
 | Key events | Quartz `CGEventPost` on the main thread | Never pynput's Controller (TIS/TSM crash). |
 | Notes control | `osascript` with arguments | |
 | WhatsApp control | Accessibility API (`AXPress`, `AXCancel`) + Cmd+F / Cmd+V | |
-| Tests | `pytest`, 970 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
+| Tests | `pytest`, 976 tests | `conftest.py` safety net blocks real key events, Accessibility actions, `open`/`lsappinfo` subprocesses and the real clipboard, fails any test that writes into the real user data folder, and keeps tests away from the user's real word list. |
 
 ### 7.3 Architecture principles
 - **Rules first, LLM never (for now):** the LLM fallback (original Step 4) was deliberately skipped; the rules cover every tested phrasing, and an LLM adds false-trigger risk.
@@ -341,12 +341,13 @@ voice-assistant/
                                setup_flow, welcome_window, login_item, account_form, account_manager, keychain,
                                settings_model, settings_window,
                                whatsapp_ax, whatsapp_control
-  assets/                      utter-app-icon.png (drawn by scripts/make_app_icon.py)
+  assets/                      utter-app-icon.png (drawn by scripts/make_app_icon.py); silero_vad_16k.safetensors
+                               and silero_vad_LICENSE.txt (the voice detector's weights)
   packaging/                   launcher.c (Utter.app's main executable; compiled by scripts/build_app.py)
   dist.noindex/                Utter.app after a build (gitignored; hidden from Spotlight)
-  scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, make_app_icon, test_notes_write,
+  scripts/                     accuracy (+ accuracy_prompts.csv), benchmark_whisper, build_app, eval_rules, export_vad_weights, make_app_icon, test_notes_write,
                                whatsapp_probe / whatsapp_experiment / whatsapp_layout_probe / whatsapp_geometry
-  tests/                       970 tests; tests/data/eval_rules.csv (rule evaluation set)
+  tests/                       976 tests; tests/data/eval_rules.csv (rule evaluation set), speech.wav (Mac voice, for the voice detector)
   recordings/  note_backups/   output of builds before v0.3.2 (gitignored, left in place)
   models/                      empty after v0.3.11 (models moved to the data folder; still searched)
 
@@ -397,7 +398,7 @@ Utter reads `~/Library/Application Support/Utter/config.toml` (copied once from 
 | Rule evaluation set | 100% accuracy on the project's own evaluation CSV (written by the agent; real-voice behavior is the true test) |
 | Personal word list (synthesized speech, `large-v3-turbo`) | Without the list: "Sanavi", "Ishan", "anti-gravity", "Samak Chaya", "Superbase", "Whisper". With it, all six spelled as listed; an ordinary sentence was unchanged; no extra latency (about 0.5 s either way); the hint was not echoed on noise. Not yet tested live with the user's voice |
 | Word-list false fixes | 0 ordinary words changed across about 95,000 words of English prose (man pages, this PRD, the command evaluation set) with a 49-name test list |
-| Automated tests | 970 passing |
+| Automated tests | 976 passing |
 
 No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). The numeric success criteria from the v0.1 draft (95% accuracy, zero false triggers, under 1.5 s) are therefore not formally measured.
 
@@ -420,6 +421,13 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
   - *Commands, earbuds:* 19 of 22; the 4 do-nothing phrases all did nothing. *Commands, MacBook Air microphone:* **22 of 22**.
   - *Cause of the earbud misses:* the earbuds mute the signal to exact digital silence between sounds and cut the soft start of a word (4 of 22 command takes started mid-word; none with the built-in mic). "open notes" lost "open" and came out "Totes". Tested and rejected as fixes, on all 87 recordings plus 20 older ones: retrying with a hint of the command phrases (3 wordings), trimming silence; none changed the result. Adding the word list (with the names) as a hint for commands fixed the "Rahul" → "Lahun" miss with no false triggers, but is not built.
 
+### 10.2 Final checks (stage 5, v0.7.1, 19 November 2026)
+- **Automated tests:** 976 passing. Rule evaluation set: 0 false triggers, 0 missed commands.
+- **Accuracy score, re-run on the same recordings:** unchanged from 17 November: dictation 99.1% of words right, commands 19 of 22, cleanup 10 of 13 exactly right, word list 7 of 9. Only one heard text differed, on a command that was already wrong ("find Ananya").
+- **Voice detector without PyTorch:** the same Silero network run with numpy. Compared with the PyTorch model on all 152 recordings (earbuds, MacBook Air microphone, older sessions), at normal and 4× volume: 46,278 chunks, largest difference in speech probability 0.00002, **no speech / no-speech decision changed** (thresholds 0.35 and 0.5). It takes 0.12 ms per 32 ms chunk (PyTorch: 0.08 ms). The weights file Silero ships as safetensors is a different version from the model Utter used, so the exact weights were exported from the PyTorch model (`scripts/export_vad_weights.py`); a test keeps comparing the two while PyTorch is installed for development.
+- **The app:** 0.64 GB instead of 1.38 GB (PyTorch, sympy, mpmath, networkx, jinja2, markupsafe and silero-vad left out). Its self-test passes, and it gets through its self-test in 2.1 s instead of 3.1 s. A test proves Utter never loads PyTorch.
+- **Live test of the installed app:** by the user.
+
 ## 11. Lessons learned (bugs found and fixed)
 
 | Problem | Cause | Fix |
@@ -438,6 +446,8 @@ No formal 30 to 50 phrase benchmark was run (the user chose to test by hand). Th
 | A test wrote a fake note backup into the real `~/Library/Application Support/` folder | A test fixture relied on the new default backup location | Fixture points at a temporary folder; `conftest.py` now fails any test that writes into the real data folder. |
 | Utter quit by itself when Caps Lock was pressed while its sign-in window was in front (19 November 2026) | Caps Lock also sends a "system-defined" event; pynput turned it into an NSEvent on its listener thread, and macOS's keyboard-layout code for Caps Lock may only run on the main thread, so macOS stopped the app (crash report: `dispatch_assert_queue_fail` in `TSMSetCapsLockKeyTransitionDetected`) | The key listener no longer asks macOS for system-defined events (media keys, Caps Lock's extra event); Utter's hotkeys never use them (`interface/hotkeys.py`). |
 | The sign-in window opened behind other apps' windows at start (19 November 2026) | A menu bar app is not brought forward by macOS when it starts, and the newer "polite" activate lets the app in front keep its place | The window takes the front firmly (activate ignoring other apps, then order front regardless), and asks again 0.6 s later in case macOS was still launching Utter. |
+| Utter quit when "Press keys…" was clicked in Settings (19 November 2026) | Recording a shortcut stops and restarts the key listener; pynput read the keyboard layout on its listener thread each time it started, and with an Utter window in front macOS stops the app for that (`dispatch_assert_queue_fail` in `TSMGetInputSourceProperty`) | The layout is read on the main thread and handed to the listener (`interface/hotkeys.py`). |
+| The numpy voice detector disagreed with the PyTorch one (19 November 2026) | The safetensors weights inside the silero-vad package are a different model version from its PyTorch model | Export the weights from the PyTorch model Utter actually used, then compare on every recording. |
 | Accessibility stayed "missing" although switched on for Utter (18 November 2026) | The switch belonged to an older, ad-hoc-signed build; macOS does not count it for builds signed with the certificate | The user ran `tccutil reset Accessibility com.utter.mac` and turned it on again; the welcome window now shows this fix when a row stays off (6.16). |
 | Early word-list correction changed "certs" → "Curtis", "Korn" → "Karan" and "github" inside a URL (found by a prose sweep before release) | Vowel-slip matching was too loose, and URLs were treated as normal words | Vowel slips need the first three letters to match and lengths within one; words inside URLs, emails and identifiers are skipped. |
 
@@ -500,9 +510,9 @@ Decisions (17 November 2026): the name is **Utter**; built for the user's own Ma
 - **Stage 2 done in v0.4.0 (tested live by the user on 18 November 2026: commands, dictation, pop-up and permissions work):** Utter.app, self-contained, signed with a free personal certificate when present (6.15).
 - **Stage 3 done in v0.5.0 (tested live by the user on 19 November 2026; its look will be redesigned later):** first-run welcome window with live permission ticks, a try-it step, and start at login, on by default (6.16).
 - **Accounts done in v0.6.0 (brought forward from Milestone 4 at the user's request; tested live by the user on 19 November 2026: sign-up with the emailed 6-digit code from Utter's Gmail sender, signed in, hotkeys working, user listed in Supabase; the Caps Lock and window-in-front fixes confirmed):** required sign-in with email and password, typo and throwaway-email checks, 7 days unused → sign in again (6.17).
-- **Stage 4 built in v0.7.0 (waiting for the user's live test):** the Settings window, every everyday setting saved and used at once (6.18).
-- Next stage: (5) final checks (all tests, unchanged accuracy score, live test of the installed app). Running from the terminal keeps working throughout.
-- Try running the voice detector without PyTorch to shrink the app; ships only if accuracy and tests are unchanged.
+- **Stage 4 built in v0.7.0:** the Settings window, every everyday setting saved and used at once (6.18).
+- **Stage 4 tested live and merged** (19 November 2026).
+- **Stage 5 built in v0.7.1 (waiting for the user's live test):** final checks: all tests, unchanged accuracy score, and the voice detector without PyTorch, halving the app (10.2). Running from the terminal keeps working throughout.
 
 ### Ongoing checks
 - Re-measure end of speech to action live with `large-v3-turbo` (fixed commands, app launch, WhatsApp search).
@@ -522,7 +532,7 @@ Decisions (17 November 2026): the name is **Utter**; built for the user's own Ma
 - Two hotkeys (`Control + Option + M`, `Control + Option + D`); Esc cancels; one keyboard listener handles all three, matched by key code.
 - Dictation hotkey: tap to toggle or hold to talk (0.4 s threshold, 0.3 s release tail); the app swallows its own hotkeys; falls back to tap-only without Accessibility.
 - Fixed commands finish early once recognized during a 0.6 s pause; anything with a name waits the full 1.5 s.
-- Python 3.12; MLX Whisper `large-v3-turbo` with a local `small` fallback, offline at runtime; Silero VAD (threshold 0.35); audio normalization; no LLM.
+- Python 3.12; MLX Whisper `large-v3-turbo` with a local `small` fallback, offline at runtime; Silero VAD run with numpy (threshold 0.35); audio normalization; no LLM.
 - Commands: open Notes, take a note, open WhatsApp, search WhatsApp, open any app. Whole-utterance rules; "open a note" deliberately not a command.
 - Dictation: chunked background transcription, one paste at the end, stop phrases at the end of speech only, clipboard save and restore.
 - Notes saved through AppleScript with arguments; failures never lose text.
