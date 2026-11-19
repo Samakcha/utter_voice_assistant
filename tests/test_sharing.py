@@ -267,4 +267,4 @@ def test_licence_and_privacy_policy_are_there():
     assert (ROOT / "LICENSE").read_text(encoding="utf-8").startswith("MIT License")
     privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8")
     assert "email address" in privacy and "never sends audio" in privacy
-    assert "Supabase" in privacy and "Deleting your account" in privacy
+    assert "Supabase" in privacy and "Sign Out" in privacy and "[CONTACT EMAIL]" not in privacy

@@ -36,11 +36,11 @@ Utter sends you no other email.
 On your Mac, Utter keeps your sign-in in the macOS Keychain, so you stay signed in. If Utter
 isn't used for 7 days, it asks you to sign in again.
 
-## Deleting your account
+## Signing out and removing Utter
 
-Email **[CONTACT EMAIL]** from the address you signed up with and ask for your account to be
-deleted. It will be deleted within 30 days, together with everything Supabase stores about
-it. To remove everything on your Mac, follow "Uninstall" in the [README](README.md).
+You can sign out at any time: menu bar icon → Sign Out, or Settings → General → Sign Out.
+That removes your sign-in from this Mac; your account itself is kept. To remove everything
+Utter keeps on your Mac, follow "Uninstall" in the [README](README.md).
 
 ## Changes
 
